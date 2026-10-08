@@ -1,0 +1,10 @@
+[Unit]
+Description=Verifica a cada 2 minutos se há versão nova da vinculos-api
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=vinculos-deploy.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,8 @@
+[Unit]
+Description=Atualiza a vinculos-api quando a main muda e a CI passou
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/vinculos/deploy/auto-deploy.sh

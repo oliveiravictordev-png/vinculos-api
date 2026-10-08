@@ -1,0 +1,4 @@
+# Arquivos que rodam na VPS (Linux) e o Makefile: sempre com fim de linha LF.
+*.sh text eol=lf
+deploy/** text eol=lf
+Makefile text eol=lf
