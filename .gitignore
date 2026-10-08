@@ -3,3 +3,6 @@ target/
 *.iml
 .vscode/
 .DS_Store
+
+# Credenciais locais (ex.: atlas-credentials.env)
+*.env
