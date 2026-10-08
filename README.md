@@ -39,6 +39,10 @@ POST /api/v1/customers/records
 - No máximo 100 empresas por requisição. Duplicatas e pontuação são normalizadas.
 - Os CNPJs acima são ilustrativos. Use o endpoint 1 (ou os exemplos que a carga imprime no log) para obter combinações reais.
 
+**Documentação interativa (Swagger):** `/swagger-ui.html`, com a especificação OpenAPI em `/v3/api-docs`. Os exemplos já vêm preenchidos com a chave do enunciado.
+
+**Health check:** `GET /actuator/health`, com `/actuator/health/liveness` (o processo está de pé) e `/actuator/health/readiness` (só fica `UP` quando o MongoDB responde). O container Docker usa o readiness no `HEALTHCHECK`.
+
 Erros seguem a RFC 9457 (`application/problem+json`): **400** para dado inválido (ano fora de 1900–2100, tipo desconhecido, dígito verificador errado) e **503** para timeout ou indisponibilidade do banco.
 
 ## Arquitetura
@@ -158,6 +162,20 @@ mvn test -Dtest=ApiBenchmark -Dbench.url=http://localhost:8080
 ```
 
 Sorteia 2.000 chaves entre os clientes carregados e mede p50/p95/p99 dos dois endpoints, com e sem o cache da API, além da vazão do endpoint 1 com 64 requisições simultâneas. Opções: `-Dbench.customers` (clientes carregados, padrão 200 milhões), `-Dbench.samples`, `-Dbench.concurrency` e `-Dbench.requests`. Sem `bench.url`, o teste é ignorado.
+
+## Deploy na VPS
+
+A demonstração pública roda numa VPS compartilhada: `deploy/docker-compose.yml` sobe o MongoDB (2 CPUs, 3 GB) e a API (2 CPUs, 1 GB), sem publicar portas. A API entra na rede `deploy_default` do Caddy que já atende 80/443 na VPS, e o Caddy a publica com HTTPS automático.
+
+```bash
+git clone https://github.com/oliveiravictordev-png/vinculos-api.git /opt/vinculos && cd /opt/vinculos/deploy
+docker compose up -d mongo
+# 100 milhões de registros: clientes 140.000.000 a 159.999.999, faixa que inclui a chave do enunciado
+docker compose run --rm api --spring.profiles.active=seed --seed.start-customer=140000000 --seed.total-records=800000000 --seed.workers=2
+docker compose up -d --build api
+```
+
+A carga vem antes da API porque a API, ao subir, cria o índice. Assim ele é criado uma vez só, no fim da carga.
 
 ## Próximos passos sugeridos
 
