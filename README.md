@@ -206,12 +206,44 @@ Como os dados são gerados:
 
 O índice secundário é criado **ao final** da carga, porque construí-lo uma vez é bem mais barato que mantê-lo a cada insert.
 
-**Ordem de grandeza** (estimativa, depende muito do disco e da CPU):
-- Dados: cerca de 120 GB sem compressão, provavelmente entre 40 e 70 GB em disco com zstd.
-- Índices: algumas dezenas de GB.
-- Tempo: algumas horas em uma máquina com SSD NVMe.
-
 Para manter a latência baixa, a RAM do MongoDB (WiredTiger cache) deve comportar pelo menos o índice `ix_ano_tipo_documento_empresa`.
+
+## Resultado com 1 bilhão de registros (medido)
+
+Carga completa executada num notebook com 12 threads, 31 GB de RAM e SSD NVMe de 512 GB. O MongoDB 8.0 rodava como replica set de 1 nó, com 14 GB de cache WiredTiger. A carga usou 8 workers e lotes de 10 mil.
+
+**Carga**
+
+| etapa | tempo |
+|---|---|
+| inserção de 1.000.000.000 de documentos | 2.189 s (~36 min, ~457 mil docs/s) |
+| criação do índice `{a, t, v, e}` | 2.492 s (~42 min) |
+| **total** | **4.682 s (~78 min)** |
+
+**Tamanho**
+
+| | medido |
+|---|---|
+| documentos na coleção | 1.000.000.000 (118 bytes em média) |
+| dados sem compressão | 110,8 GB |
+| dados em disco (zstd) | **23,2 GB** (4,8× de compressão) |
+| índice `ix_ano_tipo_documento_empresa` | **15,2 GB**; não há índice `_id` porque a coleção é clusterizada |
+| pasta do MongoDB (inclui journal e oplog) | 44,1 GB |
+
+**Latência e vazão** (`ApiBenchmark` com 2.000 chaves aleatórias entre os 200 milhões de clientes; API e benchmark na mesma máquina; rate limit desligado):
+
+| endpoint | cache da API | p50 | p95 | p99 |
+|---|---|---|---|---|
+| 1 (`/companies`) | sem cache | 3,1 ms | 4,9 ms | 6,1 ms |
+| 1 (`/companies`) | com cache | 0,6 ms | 1,5 ms | 2,2 ms |
+| 2 (`/records`) | sem cache | 2,2 ms | 3,5 ms | 4,3 ms |
+| 2 (`/records`) | com cache | 0,4 ms | 0,6 ms | 1,1 ms |
+
+Vazão do endpoint 1 com chaves sempre novas (sem acerto de cache) e 64 requisições simultâneas: **3.973 req/s**, sem nenhum erro em 50 mil requisições.
+
+No endpoint 2, "sem cache" refere-se ao cache da API. As mesmas chaves tinham acabado de passar pelo endpoint 1, então parte das páginas do índice já estava na memória do MongoDB.
+
+A chave do enunciado (2026 / CPF / 056.858.627-17) responde com 4 empresas sobre o bilhão.
 
 ### Benchmark
 
