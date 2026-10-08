@@ -45,6 +45,7 @@ services:
       OTEL_SERVICE_NAME: vinculos-api
       OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=vps-demo,service.version=1.0.0
       OTEL_METRIC_EXPORT_INTERVAL: "15000"
+      OTEL_INSTRUMENTATION_MICROMETER_ENABLED: "true"   # métricas do Spring (cache.gets, pool do Mongo) também vão ao Elastic
     deploy:
       resources:
         limits: { cpus: "2", memory: 1g }
