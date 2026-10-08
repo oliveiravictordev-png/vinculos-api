@@ -1,78 +1,193 @@
 # vinculos-api
 
-API de consulta de vínculos **cliente × empresa** sobre MongoDB, dimensionada para **1 bilhão de registros**, com foco em performance e confiança nos dados.
+[![CI](https://github.com/oliveiravictordev-png/vinculos-api/actions/workflows/ci.yml/badge.svg)](https://github.com/oliveiravictordev-png/vinculos-api/actions/workflows/ci.yml)
 
-**Stack:** Java 25 (LTS) · Spring Boot 4.1.1 · MongoDB 8.0 · Caffeine · Log4j2 (assíncrono) · Maven · JUnit 5 + Testcontainers
+API de consulta de vínculos **cliente × empresa** sobre MongoDB, dimensionada e **testada com 1 bilhão de registros**, com foco em desempenho, confiança nos dados e segurança.
 
-> **Sobre a versão do Java:** a versão mais recente é o Java 27 (GA em 15/09/2026), mas o Spring Boot 4.1 suporta oficialmente até o Java 26. Por isso o projeto usa o **Java 25, a LTS mais recente**. Para trocar, basta alterar `<java.version>` no `pom.xml`.
+| | |
+|---|---|
+| **Front (demonstração)** | https://vinculos-web-melhor-perfil.vercel.app (repositório [vinculos-web](https://github.com/oliveiravictordev-png/vinculos-web)) |
+| **API pública** | https://vinculos.212-28-185-69.sslip.io |
+| **Swagger** | https://vinculos.212-28-185-69.sslip.io/swagger-ui.html |
+| **Stack** | Java 25 · Spring Boot 4.1 · MongoDB 8.0 · Caffeine · Log4j2 assíncrono · springdoc-openapi · JUnit 5 + Testcontainers · Docker · OpenTelemetry (Elastic) |
+
+## Sumário
+
+1. [O desafio e como foi atendido](#o-desafio-e-como-foi-atendido)
+2. [Arquitetura](#arquitetura)
+3. [Endpoints](#endpoints)
+4. [Modelo de dados e índice](#modelo-de-dados-e-índice)
+5. [Testes de volume: 1 bilhão, 100 milhões e 1 milhão](#testes-de-volume)
+6. [Desempenho e cache](#desempenho-e-cache)
+7. [Confiança nos dados e segurança](#confiança-nos-dados-e-segurança)
+8. [Observabilidade](#observabilidade)
+9. [Testes automatizados e cobertura](#testes-automatizados-e-cobertura)
+10. [Como rodar](#como-rodar)
+11. [Deploy](#deploy)
+12. [Próximos passos](#próximos-passos)
+
+## O desafio e como foi atendido
+
+| requisito | como foi atendido |
+|---|---|
+| Índice do Mongo: ano + tipo do documento + valor do documento | Índice `{ano, tipo, documento, empresa}`. Os três primeiros campos são exatamente o pedido, e a empresa no final deixa o endpoint 1 ser respondido só com o índice. |
+| Endpoint 1: a chave do cliente devolve as empresas ligadas a ele | `POST /api/v1/customers/companies` |
+| Endpoint 2: chave + `empresas[]` devolvem 1 ou N dados do cliente por empresa | `POST /api/v1/customers/records` |
+| Colocar 1 bilhão de registros no banco | **1.000.000.000** de documentos carregados e medidos (78 min), com a API respondendo em p99 de 6 ms (ver [testes de volume](#testes-de-volume)) |
+
+Exemplo do enunciado, que existe na base: **2026 / CPF / 056.858.627-17** (devolve 4 empresas).
+
+## Arquitetura
+
+### Visão geral
+
+```mermaid
+flowchart LR
+    U([Usuário]) -->|HTTPS| W["vinculos-web<br/>TypeScript + Vite<br/>(Vercel)"]
+    W -->|"/api/* (rewrite, mesma origem)"| C["Caddy<br/>HTTPS automático"]
+
+    subgraph VPS["VPS (Docker)"]
+        C --> A["vinculos-api<br/>Spring Boot 4 · Java 25<br/>rate limit · cache Caffeine"]
+        A -->|"driver síncrono<br/>read concern majority"| M[("MongoDB 8.0<br/>100 milhões de registros")]
+        T["timer systemd<br/>auto-deploy"] -.->|"rebuild + rollback"| A
+    end
+
+    A -->|"OTLP: traces, métricas, logs"| E["Elastic Observability<br/>(EDOT Java)"]
+
+    subgraph GH["GitHub"]
+        R[(repositório)] --> CI["GitHub Actions<br/>make verify + Testcontainers"]
+    end
+
+    T -.->|"busca a main com a CI verde"| R
+
+    subgraph LOCAL["Prova de volume (máquina local)"]
+        B["ApiBenchmark"] --> AL["vinculos-api"] --> ML[("MongoDB 8.0<br/>1 bilhão de registros")]
+    end
+```
+
+- **Front e API são projetos separados**, com build e deploy próprios. O front chama `/api/*` no próprio domínio da Vercel, e a Vercel repassa para a VPS. Para o navegador há uma origem só, então não é preciso CORS.
+- **Na VPS**, o Caddy faz o HTTPS e encaminha para o container da API. O MongoDB fica numa rede interna do Docker e não é exposto à internet.
+- **A API manda traces, métricas e logs ao Elastic** pelo agente OpenTelemetry, sem nenhuma mudança no código.
+- **O deploy é puxado pela VPS:** um timer verifica a `main` a cada 2 minutos e só publica commits cuja CI passou. Nenhuma credencial da VPS fica no GitHub.
+- **A prova de volume roda numa máquina local** com 1 bilhão de registros. A demonstração pública usa 100 milhões, o que cabe com folga na VPS.
+
+### Camadas da API
+
+```mermaid
+flowchart TB
+    subgraph web["web (HTTP)"]
+        F1["SecurityHeadersFilter<br/>RateLimitFilter"] --> CT["CustomerController<br/>DTOs (records)"]
+        CT --> EH["ApiExceptionHandler<br/>erros RFC 9457"]
+    end
+    subgraph application["application (casos de uso, sem Spring)"]
+        UC1["FindCompaniesUseCase"]
+        UC2["FindRecordsByCompanyUseCase"]
+    end
+    subgraph domain["domain (regras puras)"]
+        K["CustomerKey<br/>Documents (CPF/CNPJ)"]
+        P{{"CustomerGateway<br/>(porta)"}}
+    end
+    subgraph infrastructure["infrastructure (adapters)"]
+        MG["MongoCustomerGateway<br/>cache Caffeine + driver"]
+        SC["MongoSchema<br/>coleção + índice"]
+        SD["DataGenerator / DataLoader<br/>carga de 1 bilhão"]
+    end
+    CT --> UC1 & UC2
+    UC1 & UC2 --> K
+    UC1 & UC2 --> P
+    MG -. implementa .-> P
+```
+
+A arquitetura é clean/hexagonal, e **as dependências só apontam para dentro**:
+- **`domain`:** as regras de negócio, em Java puro. A `CustomerKey` só existe em estado válido: ela normaliza o documento e confere os dígitos verificadores, inclusive do CNPJ alfanumérico de 2026. O `CustomerGateway` é a porta de saída para o banco.
+- **`application`:** os dois casos de uso, sem dependência do Spring. Os beans são registrados em `infrastructure/config`.
+- **`infrastructure`:** os adapters. O gateway do MongoDB usa o driver direto com cache; há também o schema, o índice e a carga em massa.
+- **`web`:** o controller e os DTOs (`record`s), o tratamento único de erros, o rate limit, os cabeçalhos de segurança e o OpenAPI.
+
+Trocar o banco significaria escrever outro adapter para a mesma porta, sem tocar nos casos de uso. As convenções de código estão no [`CLAUDE.md`](CLAUDE.md).
+
+### Caminho de uma requisição
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant N as Navegador
+    participant V as Vercel
+    participant C as Caddy
+    participant A as API
+    participant K as Cache (Caffeine)
+    participant M as MongoDB
+
+    N->>V: POST /api/v1/customers/companies
+    V->>C: rewrite (mesma origem)
+    C->>A: HTTPS → HTTP interno
+    A->>A: cabeçalhos de segurança + rate limit por IP
+    A->>A: valida a chave (ano, tipo, dígitos verificadores)
+    A->>K: busca a chave
+    alt já está no cache
+        K-->>A: empresas (microssegundos)
+    else não está
+        K->>M: distinct("e") pelo índice {a,t,v,e}
+        Note over K,M: requisições simultâneas da mesma chave<br/>esperam esta única consulta (sync=true)
+        M-->>K: CNPJs (lidos só do índice)
+        K-->>A: empresas
+    end
+    A-->>N: 200 { "companies": [...] }
+```
+
+Erros seguem o mesmo caminho e saem sempre pelo `ApiExceptionHandler`: 400, 429, 500 ou 503 no formato RFC 9457.
 
 ## Endpoints
 
-Chave do cliente: **ano + tipo do documento + valor do documento**. Os endpoints usam `POST` com corpo JSON para que o CPF/CNPJ não apareça na URL (logs de acesso, proxies).
+A chave do cliente é **ano + tipo do documento + valor do documento**. Os endpoints usam `POST` com corpo JSON, para que o CPF/CNPJ nunca apareça na URL (logs de acesso, proxies).
 
 ### 1. Empresas ligadas ao cliente
 
 ```http
 POST /api/v1/customers/companies
-{ "year": 2024, "documentType": "CPF", "document": "010.000.001-09" }
+{ "year": 2026, "documentType": "CPF", "document": "056.858.627-17" }
 ```
 ```json
-{ "companies": ["10001234000155", "10009153000102"] }
+{ "companies": ["10007037000103", "10014956000104", "10022875000148", "10049118000168"] }
 ```
 
 ### 2. Dados do cliente por empresa
 
 ```http
 POST /api/v1/customers/records
-{ "year": 2024, "documentType": "CPF", "document": "01000000109",
-  "companies": ["10001234000155", "10009153000102"] }
+{ "year": 2026, "documentType": "CPF", "document": "056.858.627-17",
+  "companies": ["10007037000103", "10049118000168"] }
 ```
 ```json
 { "companies": [
-    { "company": "10001234000155", "records": [
-        { "id": 15, "product": "CARTAO_CREDITO", "amount": 1520.37, "updatedAt": "2024-03-11T08:21:44.123Z" },
-        { "id": 17, "product": "SEGURO", "amount": 88.10, "updatedAt": "2024-09-02T17:03:10.551Z" } ] },
-    { "company": "10009153000102", "records": [ ... ] } ] }
+    { "company": "10007037000103", "records": [
+        { "id": 702879416, "product": "CARTAO_CREDITO", "amount": 93967.53, "updatedAt": "2026-02-23T23:07:04.405Z" } ] },
+    { "company": "10049118000168", "records": [
+        { "id": 702879415, "product": "INVESTIMENTO", "amount": 49108.59, "updatedAt": "2026-03-11T01:28:26.964Z" },
+        { "id": 702879419, "product": "EMPRESTIMO", "amount": 69599.43, "updatedAt": "2026-06-01T08:00:17.779Z" } ] } ] }
 ```
 
-- Uma entrada por empresa solicitada, ordenada por CNPJ. Uma empresa sem vínculo vem com `records: []`, sem ser omitida.
-- No máximo 100 empresas por requisição. Duplicatas e pontuação são normalizadas.
-- Os CNPJs acima são ilustrativos. Use o endpoint 1 (ou os exemplos que a carga imprime no log) para obter combinações reais.
+Esta é a resposta real da API pública para a chave do enunciado. Uma empresa tem 1 registro e a outra tem 2, o "1 ou N" do requisito.
 
-**Documentação interativa (Swagger):** `/swagger-ui.html`, com a especificação OpenAPI em `/v3/api-docs`. Os exemplos já vêm preenchidos com a chave do enunciado.
+- A resposta traz uma entrada por empresa solicitada, ordenada por CNPJ. Empresa sem vínculo vem com `records: []`, sem ser omitida.
+- O limite é de 100 empresas por requisição. Duplicatas e pontuação são normalizadas.
 
-**Health check:** `GET /actuator/health`, com `/actuator/health/liveness` (o processo está de pé) e `/actuator/health/readiness` (só fica `UP` quando o MongoDB responde). O container Docker usa o readiness no `HEALTHCHECK`.
+**Swagger:** `/swagger-ui.html`, com a especificação em `/v3/api-docs` e os exemplos já preenchidos com a chave do enunciado.
 
-Erros seguem a RFC 9457 (`application/problem+json`):
-- **400** para dado inválido (ano fora de 1900–2100, tipo desconhecido, dígito verificador errado, documento com mais de 18 caracteres) e para requisição malformada (rota inexistente, método errado, JSON quebrado, content-type errado), esta com a mensagem genérica `Invalid request`. A API nunca responde 404, 405 ou 415, para não ajudar quem tenta mapear rotas.
-- **429** acima do rate limit.
-- **500** para erro inesperado, sem detalhes internos.
-- **503** para timeout ou indisponibilidade do banco.
+**Health check:** `/actuator/health`, com `/liveness` e `/readiness`. O readiness só fica `UP` com o MongoDB respondendo, e o `HEALTHCHECK` do Docker usa esse endereço.
 
-**Rate limit** em `/api`: até 20 requisições por segundo por IP (rajada de 40) e 300 por segundo na instância (rajada de 600). Acima disso, a API responde 429 com `Retry-After`. O IP considerado é o que o proxy reverso recebeu (`server.forward-headers-strategy: native`), então um `X-Forwarded-For` enviado pelo próprio cliente não burla o limite. Os limites ficam em `app.rate-limit.*`, e o rate limit pode ser desligado com `RATE_LIMIT_ENABLED=false`, por exemplo para o benchmark.
+**Erros** (RFC 9457, `application/problem+json`):
 
-## Arquitetura
+| status | quando |
+|---|---|
+| 400 | dado inválido (ano fora de 1900–2100, tipo desconhecido, dígito verificador errado, documento com mais de 18 caracteres) ou requisição malformada (rota inexistente, método errado, JSON quebrado), esta com a mensagem genérica `Invalid request` |
+| 429 | acima do rate limit, com `Retry-After` |
+| 500 | erro inesperado, sem nenhum detalhe interno |
+| 503 | timeout ou indisponibilidade do banco |
 
-```
-com.teste.vinculos
-├── domain            regras puras, sem framework
-│   ├── CustomerKey         ano + tipo + documento; só existe se válida (normaliza e confere o DV)
-│   ├── Documents           validação/geração de CPF e CNPJ (inclui o CNPJ alfanumérico de 2026)
-│   ├── CustomerRecord, CompanyRecords, DocumentType, InvalidDataException
-│   └── CustomerGateway     porta de saída (interface)
-├── application       casos de uso (sem Spring)
-│   ├── FindCompaniesUseCase
-│   └── FindRecordsByCompanyUseCase
-├── infrastructure
-│   ├── config              registra os casos de uso como beans
-│   ├── mongo               adapter do gateway (driver direto + cache), schema e índice
-│   └── seed                gerador determinístico e carga paralela de 1 bilhão de registros
-└── web               controller, DTOs (records) e tratamento de erros
-```
+A API **nunca responde 404, 405 ou 415**, para não ajudar quem tenta mapear rotas.
 
-Convenção: nomes de arquivos, classes, métodos, testes, campos JSON e propriedades em inglês; docstrings e comentários em português. DTOs são `record`s.
-
-## Modelo de dados
+## Modelo de dados e índice
 
 Coleção `vinculos`: um documento por registro (cliente × empresa × dado). A coleção é **clusterizada por `_id`**: os documentos ficam gravados na ordem do próprio `_id`, sem um índice `_id` separado.
 
@@ -87,132 +202,31 @@ Coleção `vinculos`: um documento por registro (cliente × empresa × dado). A 
 | `s` | valor em centavos | long |
 | `u` | atualizado em | date |
 
-**Índice:** `{ a: 1, t: 1, v: 1, e: 1 }`. É o índice pedido (ano + tipo + documento) com a empresa ao final, o que traz dois ganhos:
-- **Endpoint 1** vira `distinct("e")` coberto pelo índice (`DISTINCT_SCAN`): nenhum documento é lido do disco.
-- **Endpoint 2** resolve o `$in` de empresas dentro do próprio índice e só busca os documentos que de fato vão na resposta.
+**Por que nomes de campo curtos:** em 1 bilhão de documentos, cada byte economizado por documento vale cerca de 1 GB.
 
-## Performance
+**Índice `{ a: 1, t: 1, v: 1, e: 1 }`:** é o índice pedido (ano + tipo + documento) com a empresa no final, o que traz dois ganhos:
+- **Endpoint 1:** vira um `distinct("e")` coberto pelo índice (`DISTINCT_SCAN`), sem ler nenhum documento do disco.
+- **Endpoint 2:** o filtro `$in` de empresas é resolvido no próprio índice, e só são lidos os documentos que de fato vão na resposta.
 
-- **Nomes de campo curtos e `_id` long:** em 1 bilhão de documentos, cada byte por documento custa cerca de 1 GB. `_id` long (8 bytes) no lugar de ObjectId (12 bytes) economiza cerca de 4 GB.
-- **Coleção clusterizada por `_id`:** elimina o índice `_id` separado, que em 1 bilhão de registros ocuparia cerca de 32 GB, e reduz a escrita durante a carga.
-- **Compressão zstd** na coleção (WiredTiger). Em serviços gerenciados que proíbem essa opção, como o MongoDB Atlas, a coleção é criada com a compressão padrão do serviço (aviso em WARN no log).
-- **Driver MongoDB direto** (`MongoCollection<Document>` com projeção), sem mapeamento de entidades.
-- **Cache Caffeine** (`companies` e `records`) com `sync=true`: requisições simultâneas da mesma chave fazem uma única consulta ao banco. A chave do endpoint 2 é normalizada (CNPJs ordenados e sem duplicatas), o que aumenta o hit rate. É configurável via `CACHE_SPEC`, e as métricas ficam em `/actuator/caches` e `/actuator/metrics/cache.gets`.
-- **Virtual threads** no Tomcat para I/O bloqueante, com pool de 200 conexões no Mongo e espera máxima de 2 s por conexão.
-- **`maxTimeMS` de 2 s** em toda consulta: uma consulta lenta é abortada no servidor em vez de acumular carga. Consultas acima de 200 ms são logadas em WARN.
-- **Log4j2 com AsyncLogger (Disruptor):** a thread da requisição não espera pelo I/O de log.
+## Testes de volume
 
-### Cache: por que Caffeine e não Redis
+A mesma API e a mesma carga, que é determinística (o cliente N gera sempre os mesmos documentos), foram testadas em três cenários:
 
-O cache fica dentro da API (Caffeine), e não num Redis, porque hoje há **uma única instância** da API:
-
-| | Caffeine (escolhido) | Redis |
-|---|---|---|
-| Acerto no cache | microssegundos, sem serialização | ~0,5–1 ms (rede + serialização) |
-| Requisições simultâneas da mesma chave | `sync=true` já agrupa em uma consulta | exige implementação própria |
-| Compartilhado entre instâncias | não | sim |
-| Sobrevive a deploy | não | sim |
-| Custo operacional | nenhum | mais um serviço e mais RAM |
-
-Os dados não mudam depois da carga, então não há invalidação a coordenar entre instâncias. O cache também só acelera consultas **repetidas**: entre 200 milhões de clientes, uma chave nova quase nunca está em cache, e quem segura a latência nesse caso é o índice do MongoDB.
-
-**Quando trocar:** com várias instâncias da API atrás de um balanceador, o caminho é cache em dois níveis: Caffeine como L1, por instância, e Redis como L2, compartilhado.
-
-**Medido na VPS** (chave fora do cache, requisições disparadas ao mesmo tempo dentro do servidor; a contagem de consultas vem do contador de uso do índice, `$indexStats`):
-
-| requisições simultâneas, mesma chave | respostas | tempo (mín–máx) | consultas ao MongoDB |
+| | 1 bilhão (local) | 100 milhões (VPS, pública) | 1 milhão (MongoDB Atlas) |
 |---|---|---|---|
-| 8 | 8 × 200 | 8–13 ms | **1** |
-| 50 | 50 × 200 | 20–177 ms | **1** |
-| 1, repetindo a chave já consultada | 200 | 4 ms | **0** |
+| objetivo | provar o requisito de volume | demonstração pública | primeiro teste em banco gerenciado |
+| MongoDB | 8.0 portátil, 14 GB de cache | 8.0 em Docker, 3 GB e 2 CPUs | Atlas Free (M0), São Paulo |
+| inserção | 2.189 s (~457 mil docs/s) | 250 s (~400 mil docs/s) | 84 s (~12 mil docs/s, pela internet) |
+| índice | 2.492 s | 143 s | 22 s |
+| dados em disco | 23,2 GB (zstd) | 2,3 GB (zstd) | 41 MB (compressão do Atlas) |
+| índice da consulta | 15,2 GB | 1,5 GB | 15 MB |
+| latência no servidor (endpoint 1) | p50 3,1 ms · p99 6,1 ms | p50 2,2 ms · p99 11,5 ms | não medida |
 
-Nenhuma requisição falha nem espera o tempo limite: a primeira consulta o banco e as demais recebem o mesmo resultado assim que ele chega.
+Todos os valores acima foram medidos. O tamanho cresce linearmente: 100 milhões ocupam exatamente 1/10 do bilhão.
 
-## Confiança nos dados
+### 1 bilhão de registros (local)
 
-- **Validação de entrada no domínio:** os dígitos verificadores de CPF e CNPJ são conferidos (inclusive no CNPJ alfanumérico), e a normalização remove pontuação.
-- **Validação de schema no MongoDB** (`$jsonSchema`, `validationLevel: strict`): o banco recusa documentos com tipo ou formato errado, mesmo que venham de fora da aplicação.
-- **Read concern `majority` + leitura no primário:** a API só devolve dados confirmados pela maioria do replica set, que não sofrem rollback. Isso é configurado no código, então não depende da connection string.
-- **Valores monetários em centavos (long)**, expostos como `BigDecimal`: nenhum erro de ponto flutuante.
-- **Carga idempotente:** como o `_id` é determinístico, reexecutar ou retomar a carga nunca duplica registros. Há teste cobrindo isso.
-- **Falha explícita:** um timeout ou erro do banco retorna 503, nunca uma resposta parcial.
-- **LGPD:** o documento aparece mascarado nos logs (`010******09`), e as respostas de `/api` vão com `Cache-Control: no-store`, para não ficarem guardadas em navegador ou proxy.
-- **Cabeçalhos de segurança** em todas as respostas: `Content-Security-Policy` (a mais restrita em `/api`; limitada à própria origem no Swagger), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy` e HSTS quando a requisição chega por HTTPS.
-- **Dependências vigiadas:** o Dependabot (`.github/dependabot.yml`) abre PRs semanais para Maven, imagens Docker e actions, e emite alertas de vulnerabilidade. Cada PR passa pela CI antes do merge.
-
-## Como rodar
-
-Pré-requisitos: **JDK 25**, **Maven 3.9+** e **Docker**. O `Makefile` reúne os comandos; `make` sozinho lista todos.
-
-```bash
-make mongo-up     # MongoDB local (replica set de 1 nó) via Docker
-make test         # testes (a integração sobe um MongoDB via Testcontainers; sem Docker ela é pulada)
-make run          # API em http://localhost:8080
-```
-
-| comando | o que faz |
-|---|---|
-| `make mongo-up` / `make mongo-down` | sobe/para o MongoDB local |
-| `make run` | sobe a API (Swagger em `/swagger-ui.html`) |
-| `make seed RECORDS=10000000` | carga de dados (padrão 10 milhões; `RECORDS=1000000000` para 1 bilhão) |
-| `make test` | testes unitários, web e integração |
-| `make verify` | o mesmo que a CI: testes + portão de cobertura |
-| `make coverage` | testes + caminhos dos relatórios |
-| `make bench API_URL=...` / `make bench-public` | benchmark local / contra a demonstração pública |
-| `make health API_URL=...` / `make swagger` | health check / endereços da documentação |
-| `make package` / `make docker-build` | jar / imagem Docker |
-| `make deploy-vps` / `make seed-vps` | na VPS: atualizar e subir / carregar 100 milhões |
-| `make clean` | remove `target/` |
-
-No Windows, os comandos `make` funcionam no WSL ou no Git Bash com `make` instalado. Sem `make`, use os comandos `mvn`/`docker` equivalentes, que estão no próprio `Makefile`.
-
-### Testes e cobertura
-
-O `mvn test` gera dois relatórios: a **cobertura** (JaCoCo) em `target/site/jacoco/index.html` e os **testes** (Surefire) em `target/reports/surefire.html`. A CI (GitHub Actions, `.github/workflows/ci.yml`) roda `make verify` a cada push, com Docker, então o teste de integração usa um MongoDB real. Ela publica os relatórios como artefato (`test-reports`) e mostra a cobertura por pacote no resumo da execução. O `verify` **falha** se a cobertura ficar abaixo de 85% das linhas ou 75% das ramificações.
-
-Resultado na CI (46 testes, 0 falhas):
-
-| pacote | linhas | ramificações |
-|---|---|---|
-| `application` | 100% | 100% |
-| `domain` | 98% | 87% |
-| `infrastructure.config` | 100% | 100% |
-| `infrastructure.mongo` | 91% | 50% |
-| `infrastructure.seed` | 83% | 73% |
-| `web` | 97% | 90% |
-| `web.dto` | 100% | 100% |
-| **total** | **92%** | **82%** |
-
-### Carga de 1 bilhão de registros
-
-```bash
-mvn -DskipTests package
-java -jar target/vinculos-api-1.0.0.jar --spring.profiles.active=seed
-```
-
-| propriedade | padrão | descrição |
-|---|---|---|
-| `seed.total-records` | 1000000000 | total de registros (5 por cliente, ou seja, 200 milhões de chaves) |
-| `seed.start-customer` | 0 | retoma a carga a partir de um cliente |
-| `seed.batch-size` | 10000 | documentos por `insertMany` |
-| `seed.workers` | nº de CPUs | threads de inserção |
-
-Exemplo menor para validar o ambiente: `--seed.total-records=10000000`.
-
-Como os dados são gerados:
-- Cada cliente tem de 1 a 4 empresas e 5 registros distribuídos entre elas, então há 1 ou N registros por empresa.
-- Os anos vão de 2024 a 2026, e cerca de 20% das chaves são CNPJ.
-- Os documentos são válidos.
-- O log da carga imprime 3 chaves de exemplo para testar os endpoints. Exemplo: `year=2024, CPF 01000000109`.
-- A chave do exemplo do enunciado (**2026 / CPF / 056.858.627-17**) é gerada pelo cliente 140.575.883, com 4 empresas. Ela existe em qualquer carga a partir de cerca de 703 milhões de registros.
-
-O índice secundário é criado **ao final** da carga, porque construí-lo uma vez é bem mais barato que mantê-lo a cada insert.
-
-Para manter a latência baixa, a RAM do MongoDB (WiredTiger cache) deve comportar pelo menos o índice `ix_ano_tipo_documento_empresa`.
-
-## Resultado com 1 bilhão de registros (medido)
-
-Carga completa executada num notebook com 12 threads, 31 GB de RAM e SSD NVMe de 512 GB. O MongoDB 8.0 rodava como replica set de 1 nó, com 14 GB de cache WiredTiger. A carga usou 8 workers e lotes de 10 mil.
+**Ambiente:** notebook com 12 threads, 31 GB de RAM e SSD NVMe de 512 GB; MongoDB 8.0 como replica set de 1 nó, com 14 GB de cache WiredTiger; carga com 8 workers e lotes de 10 mil.
 
 **Carga**
 
@@ -232,6 +246,8 @@ Carga completa executada num notebook com 12 threads, 31 GB de RAM e SSD NVMe de
 | índice `ix_ano_tipo_documento_empresa` | **15,2 GB**; não há índice `_id` porque a coleção é clusterizada |
 | pasta do MongoDB (inclui journal e oplog) | 44,1 GB |
 
+A coleção clusterizada fez diferença: sem ela, haveria mais cerca de 32 GB de índice `_id`.
+
 **Latência e vazão** (`ApiBenchmark` com 2.000 chaves aleatórias entre os 200 milhões de clientes; API e benchmark na mesma máquina; rate limit desligado):
 
 | endpoint | cache da API | p50 | p95 | p99 |
@@ -241,74 +257,184 @@ Carga completa executada num notebook com 12 threads, 31 GB de RAM e SSD NVMe de
 | 2 (`/records`) | sem cache | 2,2 ms | 3,5 ms | 4,3 ms |
 | 2 (`/records`) | com cache | 0,4 ms | 0,6 ms | 1,1 ms |
 
-Vazão do endpoint 1 com chaves sempre novas (sem acerto de cache) e 64 requisições simultâneas: **3.973 req/s**, sem nenhum erro em 50 mil requisições.
+- **Vazão:** **3.973 req/s** no endpoint 1, com chaves sempre novas (sem acerto de cache) e 64 requisições simultâneas, sem nenhum erro em 50 mil requisições.
+- No endpoint 2, "sem cache" refere-se ao cache da API: as mesmas chaves tinham acabado de passar pelo endpoint 1, então parte do índice já estava na memória do MongoDB.
+- A chave do enunciado responde com 4 empresas sobre o bilhão.
 
-No endpoint 2, "sem cache" refere-se ao cache da API. As mesmas chaves tinham acabado de passar pelo endpoint 1, então parte das páginas do índice já estava na memória do MongoDB.
+### 100 milhões de registros (VPS, demonstração pública)
 
-A chave do enunciado (2026 / CPF / 056.858.627-17) responde com 4 empresas sobre o bilhão.
+**Ambiente:** VPS com 6 vCPU e 12 GB de RAM, compartilhada com outro sistema em produção. Por isso, o MongoDB ficou limitado a 2 CPUs e 3 GB de RAM, e a API a 2 CPUs e 1 GB. A faixa carregada (clientes 140 a 160 milhões) inclui a chave do enunciado.
 
-### Benchmark
+| medida | resultado |
+|---|---|
+| carga | 100 milhões em 250 s, mais 143 s de índice (6,5 min no total) |
+| latência no servidor (traces no Elastic, endpoint 1) | p50 2,2 ms · p95 6,1 ms · p99 11,5 ms em 4.045 requisições |
+| latência no servidor (endpoint 2) | p50 3,5 ms · p95 5,8 ms · p99 6,9 ms |
+| consulta no MongoDB (`distinct` / `find`) | p50 1,5 ms / 1,5 ms · p95 3,1 ms / 1,8 ms |
+| latência do Brasil até a VPS (EUA) | ~170 ms, quase toda de rede; com e sem cache a diferença é de ~3 ms |
+| 8 / 50 requisições simultâneas, mesma chave nova | todas com 200, e **1 consulta** ao MongoDB em cada rodada |
+| 80 requisições simultâneas do mesmo IP | 47 aceitas e 33 recusadas com 429 (rate limit) |
+| acerto do cache (`companies`) | 97% |
 
-Com a API rodando sobre a base carregada:
+### 1 milhão de registros (MongoDB Atlas)
+
+O primeiro teste em banco gerenciado foi feito no **MongoDB Atlas Free** (M0, AWS São Paulo), com a API rodando localmente e carregando os dados pela internet.
+
+| medida | resultado |
+|---|---|
+| carga | 1 milhão em 84 s (~12 mil docs/s, limitado pela rede), mais 22 s de índice |
+| tamanho | 119 MB sem compressão, 41 MB em disco; índices de 47 MB (32 MB de `_id` e 15 MB do índice da consulta) |
+| consulta pelo front (local → Atlas) | 174 ms na primeira chamada, 10 ms com cache |
+
+**O que esse teste ensinou:**
+- **O Atlas proíbe a opção `storageEngine`** (zstd) na criação da coleção. A API passou a detectar a recusa e criar a coleção com a compressão do próprio serviço, registrando um aviso.
+- **O índice `_id` ocupava 2/3 do espaço de índices.** Isso levou à coleção clusterizada, que eliminou esse índice: em 1 bilhão, foram cerca de 32 GB a menos.
+- **1 bilhão no Atlas exigiria um cluster pago.** Cabe com cerca de 40 GB de disco e um índice de 15 GB em RAM, o que equivale a uma instância de 32 GB. O teste de volume ficou numa máquina própria.
+
+### Como reproduzir
 
 ```bash
+make seed RECORDS=1000000000        # carga de 1 bilhão (determinística e idempotente; pode ser retomada)
+make run                            # API sobre a base carregada
 make bench API_URL=http://localhost:8080
-# ou: mvn test -Dtest=ApiBenchmark -Dbench.url=http://localhost:8080
 ```
 
-Sorteia 2.000 chaves entre os clientes carregados e mede p50/p95/p99 dos dois endpoints, com e sem o cache da API, além da vazão do endpoint 1 com 64 requisições simultâneas. Opções: `-Dbench.first-customer` e `-Dbench.customers` (faixa de clientes carregados; padrão a partir de 0, com 200 milhões), `-Dbench.samples`, `-Dbench.concurrency` e `-Dbench.requests`. Sem `bench.url`, o teste é ignorado.
+| propriedade da carga | padrão | descrição |
+|---|---|---|
+| `seed.total-records` | 1000000000 | total de registros (5 por cliente, ou seja, 200 milhões de chaves) |
+| `seed.start-customer` | 0 | começa (ou retoma) a partir de um cliente |
+| `seed.batch-size` | 10000 | documentos por `insertMany` |
+| `seed.workers` | nº de CPUs | threads de inserção |
 
-## Deploy na VPS
+Como os dados são gerados:
+- Cada cliente tem de 1 a 4 empresas e 5 registros distribuídos entre elas, então há empresas com 1 registro e com vários.
+- Os anos vão de 2024 a 2026, e cerca de 20% das chaves são CNPJ.
+- Todos os documentos têm dígitos verificadores válidos.
+- A chave do enunciado é gerada pelo cliente 140.575.883 e existe em qualquer carga a partir de ~703 milhões de registros.
+- O índice é criado **no fim** da carga, porque construí-lo uma vez sai bem mais barato que mantê-lo a cada insert.
 
-A demonstração pública roda numa VPS compartilhada: `deploy/docker-compose.yml` sobe o MongoDB (2 CPUs, 3 GB) e a API (2 CPUs, 1 GB), sem publicar portas. A API entra na rede `deploy_default` do Caddy que já atende 80/443 na VPS, e o Caddy a publica com HTTPS automático.
+Opções do benchmark: `-Dbench.first-customer` e `-Dbench.customers` (faixa carregada), `-Dbench.samples`, `-Dbench.concurrency` e `-Dbench.requests`. Contra a VPS, use `make bench-public`, que respeita o rate limit.
+
+## Desempenho e cache
+
+- **Driver MongoDB direto** (`MongoCollection<Document>` com projeção), sem mapeamento de entidades.
+- **Virtual threads** no Tomcat para o I/O bloqueante, com pool de conexões configurado pela URI e espera máxima de 2 s por conexão.
+- **`maxTimeMS` de 2 s** em toda consulta: uma consulta lenta é abortada no servidor, em vez de acumular carga. Consultas acima de 200 ms são logadas em WARN.
+- **Log4j2 com AsyncLogger (Disruptor):** a thread da requisição não espera o I/O de log.
+- **Cache Caffeine** (`companies` e `records`) com `sync=true`: requisições simultâneas da mesma chave fazem uma única consulta ao banco. A chave do endpoint 2 é normalizada (CNPJs ordenados e sem duplicatas), o que aumenta a taxa de acerto. O tamanho é configurável via `CACHE_SPEC`.
+
+### Por que Caffeine e não Redis
+
+| | Caffeine (escolhido) | Redis |
+|---|---|---|
+| acerto no cache | microssegundos, sem serialização | ~0,5–1 ms (rede + serialização) |
+| requisições simultâneas da mesma chave | `sync=true` já agrupa em uma consulta | exige implementação própria |
+| compartilhado entre instâncias | não | sim |
+| sobrevive a deploy | não | sim |
+| custo operacional | nenhum | mais um serviço e mais RAM |
+
+Hoje há **uma única instância** da API, e os dados não mudam depois da carga, então não há invalidação de cache a coordenar. O cache só acelera consultas **repetidas**: entre 200 milhões de clientes, uma chave nova quase nunca está em cache, e quem segura a latência nesse caso é o índice. **Quando trocar:** com várias instâncias atrás de um balanceador, o caminho é cache em dois níveis, com o Caffeine como L1 e o Redis como L2 compartilhado.
+
+## Confiança nos dados e segurança
+
+- **Validação de entrada no domínio:** os dígitos verificadores de CPF e CNPJ são conferidos (inclusive no CNPJ alfanumérico), a pontuação é normalizada e os tamanhos têm limite.
+- **Validação de schema no MongoDB** (`$jsonSchema` estrito, gerado a partir das constantes do código): o banco recusa documentos fora do formato, venham de onde vierem.
+- **Read concern `majority` + leitura no primário:** só sai dado confirmado pela maioria do replica set, que não sofre rollback.
+- **Dinheiro em centavos (`long`)**, exposto como `BigDecimal`: nenhum erro de ponto flutuante.
+- **Carga idempotente:** com o `_id` determinístico, reexecutar ou retomar a carga nunca duplica registros. Há teste cobrindo isso.
+- **Falha explícita:** timeout ou erro do banco viram 503, nunca uma resposta parcial.
+- **LGPD:**
+  - o documento aparece mascarado nos logs (`010******09`);
+  - as respostas de `/api` vão com `Cache-Control: no-store`;
+  - o OpenTelemetry troca os valores das consultas por `?`, então nenhum CPF/CNPJ sai da API.
+- **Cabeçalhos de segurança:** CSP (a mais restrita em `/api`), `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy` e HSTS.
+- **Rate limit** em `/api`:
+  - até 20 req/s por IP (rajada de 40) e 300 req/s na instância;
+  - o IP considerado é o visto pelo proxy, então um `X-Forwarded-For` enviado pelo cliente não burla o limite.
+- **Dependências vigiadas:** o Dependabot abre PRs semanais (Maven, Docker e actions) e emite alertas de vulnerabilidade.
+- **Segredos fora do Git:** ficam em arquivos `*.env` ignorados. O exemplo sem segredo está em `deploy/.env.example`.
+
+## Observabilidade
+
+A imagem traz o agente OpenTelemetry da Elastic (EDOT Java), ligado só quando `OTEL_EXPORTER_OTLP_ENDPOINT` está definido. Sem mudar o código, ele envia ao Elastic:
+- **Traces:** cada requisição, com a consulta ao MongoDB como span filho.
+- **Métricas:** JVM, HTTP, cache e pool de conexões do MongoDB.
+- **Logs:** os do Log4j2, com o documento mascarado.
+
+O serviço aparece como `vinculos-api`, no ambiente `vps-demo`. As consultas ES|QL para os dashboards (latência por endpoint, status HTTP, 429, consultas lentas, acerto do cache, heap) estão em [`docs/observabilidade-esql.md`](docs/observabilidade-esql.md), todas testadas contra os dados reais.
+
+## Testes automatizados e cobertura
+
+| nível | exemplos | ferramenta |
+|---|---|---|
+| unidade | domínio, casos de uso, rate limit, validador do MongoDB | JUnit 5 + AssertJ, com fakes |
+| web / contrato HTTP | formato e status dos erros, cabeçalhos de segurança | `@WebMvcTest` + `MockMvcTester` |
+| integração | os dois endpoints sobre um MongoDB real, recarga idempotente | `@SpringBootTest` + Testcontainers |
+| carga / desempenho | latência e vazão | `ApiBenchmark` (opt-in) |
+
+A CI (GitHub Actions) roda `make verify` a cada push, com Docker, então a integração usa um MongoDB real. Ela publica os relatórios (JaCoCo e Surefire) como artefato e **falha** se a cobertura cair abaixo de 85% das linhas ou 75% das ramificações. Localmente, `make test` gera `target/site/jacoco/index.html` e `target/reports/surefire.html`.
+
+Cobertura na CI: **92% das linhas e 82% das ramificações**, com os testes passando.
+
+| pacote | linhas | ramificações |
+|---|---|---|
+| `application` | 100% | 100% |
+| `domain` | 98% | 87% |
+| `infrastructure.config` | 100% | 100% |
+| `infrastructure.mongo` | 91% | 50% |
+| `infrastructure.seed` | 83% | 73% |
+| `web` | 97% | 90% |
+| `web.dto` | 100% | 100% |
+
+## Como rodar
+
+Pré-requisitos: **JDK 25**, **Maven 3.9+** e **Docker**. O `make` sozinho lista todos os comandos.
 
 ```bash
-git clone https://github.com/oliveiravictordev-png/vinculos-api.git /opt/vinculos && cd /opt/vinculos/deploy
-docker compose up -d mongo
-# 100 milhões de registros: clientes 140.000.000 a 159.999.999, faixa que inclui a chave do enunciado
-docker compose run --rm api --spring.profiles.active=seed --seed.start-customer=140000000 --seed.total-records=800000000 --seed.workers=2
-docker compose up -d --build api
+make mongo-up     # MongoDB local (replica set de 1 nó) via Docker
+make test         # testes (a integração usa Testcontainers; sem Docker ela é pulada)
+make run          # API em http://localhost:8080 (Swagger em /swagger-ui.html)
 ```
 
-A carga vem antes da API porque a API, ao subir, cria o índice. Assim ele é criado uma vez só, no fim da carga.
+| comando | o que faz |
+|---|---|
+| `make mongo-up` / `make mongo-down` | sobe/para o MongoDB local |
+| `make run` | sobe a API |
+| `make seed RECORDS=10000000` | carga de dados (padrão 10 milhões) |
+| `make test` / `make verify` | testes / o mesmo que a CI, com o portão de cobertura |
+| `make coverage` | testes + caminhos dos relatórios |
+| `make bench API_URL=...` / `make bench-public` | benchmark local / contra a demonstração pública |
+| `make health` / `make swagger` | health check / endereços da documentação |
+| `make package` / `make docker-build` | jar / imagem Docker |
+| `make deploy-vps` / `make seed-vps` | na VPS: atualizar e subir / carregar 100 milhões |
+| `make clean` | remove `target/` |
 
-### Deploy automático
+No Windows, o `make` funciona pelo WSL ou pelo Git Bash. Os comandos `mvn`/`docker` equivalentes estão no próprio `Makefile`.
 
-Depois da primeira subida, a VPS se atualiza sozinha. Um timer do systemd roda `deploy/auto-deploy.sh` a cada 2 minutos:
+## Deploy
+
+**Primeira subida na VPS:** `deploy/docker-compose.yml` sobe o MongoDB e a API com recursos limitados e sem publicar portas. A API entra na rede do Caddy que já atende 80/443 na VPS.
+
+```bash
+git clone https://github.com/oliveiravictordev-png/vinculos-api.git /opt/vinculos && cd /opt/vinculos
+make seed-vps                     # MongoDB + carga de 100 milhões (antes da API, para o índice ser criado uma vez só)
+make deploy-vps                   # sobe a API
+cp deploy/systemd/* /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now vinculos-deploy.timer
+```
+
+**Deploy automático** (`deploy/auto-deploy.sh`, a cada 2 minutos):
 1. busca a `main`;
-2. **só publica o commit novo se a CI dele passou** (consulta a API pública do GitHub; enquanto a CI roda, espera o próximo ciclo);
-3. reconstrói a imagem e troca o container da API;
+2. só publica o commit novo **se a CI dele passou**;
+3. reconstrói e troca o container da API;
 4. se a API nova não ficar saudável em 2 minutos, **volta sozinha** para a imagem anterior.
 
-A VPS puxa as mudanças, em vez de o GitHub empurrá-las: nenhuma chave de acesso à VPS fica guardada no GitHub. Para instalar o timer (uma vez):
+O histórico fica em `journalctl -u vinculos-deploy`.
 
-```bash
-cp /opt/vinculos/deploy/systemd/* /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now vinculos-deploy.timer
-journalctl -u vinculos-deploy -n 20      # o que foi publicado (ou recusado)
-systemctl stop vinculos-deploy.timer     # pausar
-```
+**Observabilidade:** para ligar o envio ao Elastic, copie `deploy/.env.example` para `deploy/.env` na VPS e preencha o endpoint OTLP e a chave.
 
-### Observabilidade (Elastic + OpenTelemetry)
+## Próximos passos
 
-A imagem traz o agente OpenTelemetry da Elastic (EDOT Java), que só é carregado quando `OTEL_EXPORTER_OTLP_ENDPOINT` está definido. Para ligar, copie `deploy/.env.example` para `deploy/.env` na VPS e preencha o endpoint OTLP e a chave de API do Elastic Observability. Sem mudar o código, o agente envia:
-
-- **Traces:** cada requisição HTTP, com a consulta ao MongoDB como span filho. Os valores das consultas são substituídos por `?`, então nenhum CPF/CNPJ sai da API.
-- **Métricas:** JVM (heap, GC, threads, CPU) e latência e volume das requisições HTTP, a cada 15 s.
-- **Logs:** os do Log4j2, com o documento já mascarado.
-
-No Elastic, o serviço aparece como `vinculos-api`, no ambiente `vps-demo`.
-
-Para gerar tráfego contra a demonstração pública (a VPS tem os clientes de 140 a 160 milhões):
-
-```bash
-mvn test -Dtest=ApiBenchmark -Dbench.url=https://vinculos.212-28-185-69.sslip.io \
-  -Dbench.first-customer=140000000 -Dbench.customers=20000000 -Dbench.samples=300 -Dbench.requests=3000 -Dbench.concurrency=2
-```
-
-Com o rate limit ligado, um único IP passa de 20 requisições por segundo com poucas conexões simultâneas. Por isso, contra a VPS, use `-Dbench.concurrency=2`. Para medir a vazão máxima, rode o benchmark contra uma instância com `RATE_LIMIT_ENABLED=false`.
-
-## Próximos passos sugeridos
-
-- Sharding por `{ a: 1, t: 1, v: 1 }` se o volume crescer além de um nó.
-- Redis como cache L2 compartilhado, mantendo o Caffeine como L1, quando a API tiver mais de uma instância (ver "Cache: por que Caffeine e não Redis").
-- Endpoint `/actuator/prometheus` (micrometer-registry-prometheus) para observabilidade.
+- **Sharding** por `{ a: 1, t: 1, v: 1 }`, se o volume crescer além de um nó.
+- **Redis como cache L2 compartilhado**, mantendo o Caffeine como L1, quando houver mais de uma instância da API.
+- **Autenticação** (API key ou OAuth2), se a API deixar de ser uma demonstração pública.
+- **Domínio próprio com Cloudflare** na frente da API, para proteção contra DDoS e para esconder o IP da VPS.
