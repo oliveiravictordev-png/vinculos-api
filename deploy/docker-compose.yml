@@ -32,10 +32,19 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+    # Credenciais do Elastic Observability (OTEL_EXPORTER_OTLP_ENDPOINT e OTEL_EXPORTER_OTLP_HEADERS) ficam
+    # em deploy/.env, só na VPS e fora do Git. Sem esse arquivo, a API roda sem o agente OpenTelemetry.
+    env_file:
+      - path: .env
+        required: false
     environment:
       MONGODB_URI: mongodb://mongo:27017/vinculos?directConnection=true&maxPoolSize=50&minPoolSize=5&waitQueueTimeoutMS=2000&retryWrites=true
       ACTUATOR_ENDPOINTS: health      # em público, só o health check (sem metrics/caches)
-      JAVA_OPTS: -XX:MaxRAMPercentage=75
+      JAVA_OPTS: -XX:MaxRAMPercentage=70
+      CACHE_SPEC: maximumSize=50000,expireAfterWrite=5m,recordStats   # cabe no heap de ~700 MB do container
+      OTEL_SERVICE_NAME: vinculos-api
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=vps-demo,service.version=1.0.0
+      OTEL_METRIC_EXPORT_INTERVAL: "15000"
     deploy:
       resources:
         limits: { cpus: "2", memory: 1g }
