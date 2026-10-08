@@ -91,7 +91,8 @@ public class DataLoader {
         log.info("Insertion finished: {} records in {} s; creating index...", inserted.get(), secondsSince(start));
         schema.ensureIndex();
         long inCollection = collection.estimatedDocumentCount();
-        long expected = endCustomer * RECORDS_PER_CUSTOMER;
+        // Limite inferior: a faixa desta execução precisa estar inteira na coleção (pode haver faixas anteriores).
+        long expected = (endCustomer - startCustomer) * RECORDS_PER_CUSTOMER;
         if (inCollection < expected) {
             log.warn("Collection has {} records, expected at least {}: rerun the load to complete it", inCollection, expected);
         }
