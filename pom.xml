@@ -21,6 +21,8 @@
         <java.version>25</java.version>
         <disruptor.version>4.0.0</disruptor.version>
         <springdoc.version>3.1.1</springdoc.version>
+        <jacoco.version>0.8.15</jacoco.version>
+        <surefire-report.version>3.6.0</surefire-report.version>
     </properties>
 
     <dependencies>
@@ -131,6 +133,47 @@
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <!-- Cobertura de testes: target/site/jacoco/index.html (gerado no mvn test) -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco.version}</version>
+                <configuration>
+                    <excludes>
+                        <exclude>com/teste/vinculos/VinculosApplication.class</exclude>
+                    </excludes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Relatório dos testes: target/reports/surefire.html (gerado no mvn test) -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-report-plugin</artifactId>
+                <version>${surefire-report.version}</version>
+                <executions>
+                    <execution>
+                        <id>test-report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report-only</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>

@@ -1,0 +1,54 @@
+# Testes a cada push/PR com MongoDB real (Testcontainers; o runner tem Docker), relatórios e resumo de cobertura.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Testes, cobertura (JaCoCo) e relatório (Surefire)
+        run: mvn -B -ntp verify
+
+      - name: Resumo da cobertura
+        if: always()
+        run: |
+          csv=target/site/jacoco/jacoco.csv
+          [ -f "$csv" ] || { echo "Sem relatório de cobertura." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          {
+            echo "## Cobertura de testes (JaCoCo)"
+            echo
+            echo "| pacote | linhas | ramificações |"
+            echo "|---|---|---|"
+            # Colunas do jacoco.csv: 6/7 = ramificações perdidas/cobertas, 8/9 = linhas perdidas/cobertas.
+            awk -F, 'NR > 1 { lc[$2] += $9; lm[$2] += $8; bc[$2] += $7; bm[$2] += $6 }
+              END { for (p in lc) printf "| `%s` | %.0f%% | %.0f%% |\n", p, 100 * lc[p] / (lc[p] + lm[p]), (bc[p] + bm[p]) ? 100 * bc[p] / (bc[p] + bm[p]) : 100 }' "$csv" | sort
+            awk -F, 'NR > 1 { lc += $9; lm += $8; bc += $7; bm += $6 }
+              END { printf "| **total** | **%.0f%%** | **%.0f%%** |\n", 100 * lc / (lc + lm), 100 * bc / (bc + bm) }' "$csv"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publicar relatórios
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/site/jacoco/
+            target/reports/
+            target/surefire-reports/
+          if-no-files-found: warn
