@@ -87,6 +87,8 @@ Camadas no estilo clean/hexagonal. **A dependência só aponta para dentro:** `w
 - **Documento nunca aparece completo em log:** use `CustomerKey.toString()` / `Documents.mask`. O agente OpenTelemetry já troca valores de consulta por `?`.
 - **Segredos nunca no Git:** ficam em arquivos `*.env` (ignorados): `atlas-credentials.env`, `elastic-credentials.env` e `deploy/.env` na VPS. Exemplo sem segredo em `deploy/.env.example`.
 - **Actuator público** expõe só `health` (`ACTUATOR_ENDPOINTS`).
+- **Cabeçalhos de segurança** ficam no `SecurityHeadersFilter`, que roda antes de tudo: CSP, nosniff, frame DENY, referrer, permissions, HSTS sob HTTPS e `Cache-Control: no-store` em `/api`. Uma página nova servida pela API (como o Swagger) precisa da sua própria CSP ali, sem afrouxar a de `/api`.
+- **Dependabot** abre PRs semanais (Maven, Docker, actions). Só faça merge com a CI verde. Atualizações de major (ex.: Spring Boot) se tratam à parte, com leitura das notas de versão.
 - Dependências e imagens com **versão fixa** e checksum quando baixadas (ex.: agente EDOT no Dockerfile).
 - A API é pública e de leitura, como pede o enunciado; autenticação (API key ou OAuth2) é o próximo passo se ela deixar de ser uma demonstração.
 
@@ -122,7 +124,7 @@ make seed RECORDS=10000000           # carga menor
 make verify                          # o mesmo que a CI
 ```
 
-Deploy da demonstração pública: `deploy/docker-compose.yml` na VPS (passo a passo no README, seção "Deploy na VPS"). O Caddy que publica a API pertence a outro projeto da VPS (`minha-paroquia`); depois de mudar o `Caddyfile` dele, reinicie o container do Caddy.
+Deploy da demonstração pública: `deploy/docker-compose.yml` na VPS (passo a passo no README, seção "Deploy na VPS"). **O deploy é automático:** o timer `vinculos-deploy` da VPS publica cada commit da `main` cuja CI passou e volta sozinho se a API nova não ficar saudável. Por isso, um push na `main` vai para produção em poucos minutos: nunca faça push direto de algo que não passou em `make verify`. O Caddy que publica a API pertence a outro projeto da VPS (`minha-paroquia`); depois de mudar o `Caddyfile` dele, reinicie o container do Caddy.
 
 ## Git
 

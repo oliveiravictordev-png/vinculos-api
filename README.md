@@ -136,7 +136,9 @@ Nenhuma requisição falha nem espera o tempo limite: a primeira consulta o banc
 - **Valores monetários em centavos (long)**, expostos como `BigDecimal`: nenhum erro de ponto flutuante.
 - **Carga idempotente:** como o `_id` é determinístico, reexecutar ou retomar a carga nunca duplica registros. Há teste cobrindo isso.
 - **Falha explícita:** um timeout ou erro do banco retorna 503, nunca uma resposta parcial.
-- **LGPD:** o documento aparece mascarado nos logs (`010******09`).
+- **LGPD:** o documento aparece mascarado nos logs (`010******09`), e as respostas de `/api` vão com `Cache-Control: no-store`, para não ficarem guardadas em navegador ou proxy.
+- **Cabeçalhos de segurança** em todas as respostas: `Content-Security-Policy` (a mais restrita em `/api`; limitada à própria origem no Swagger), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy` e HSTS quando a requisição chega por HTTPS.
+- **Dependências vigiadas:** o Dependabot (`.github/dependabot.yml`) abre PRs semanais para Maven, imagens Docker e actions, e emite alertas de vulnerabilidade. Cada PR passa pela CI antes do merge.
 
 ## Como rodar
 
@@ -269,6 +271,22 @@ docker compose up -d --build api
 ```
 
 A carga vem antes da API porque a API, ao subir, cria o índice. Assim ele é criado uma vez só, no fim da carga.
+
+### Deploy automático
+
+Depois da primeira subida, a VPS se atualiza sozinha. Um timer do systemd roda `deploy/auto-deploy.sh` a cada 2 minutos:
+1. busca a `main`;
+2. **só publica o commit novo se a CI dele passou** (consulta a API pública do GitHub; enquanto a CI roda, espera o próximo ciclo);
+3. reconstrói a imagem e troca o container da API;
+4. se a API nova não ficar saudável em 2 minutos, **volta sozinha** para a imagem anterior.
+
+A VPS puxa as mudanças, em vez de o GitHub empurrá-las: nenhuma chave de acesso à VPS fica guardada no GitHub. Para instalar o timer (uma vez):
+
+```bash
+cp /opt/vinculos/deploy/systemd/* /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now vinculos-deploy.timer
+journalctl -u vinculos-deploy -n 20      # o que foi publicado (ou recusado)
+systemctl stop vinculos-deploy.timer     # pausar
+```
 
 ### Observabilidade (Elastic + OpenTelemetry)
 
