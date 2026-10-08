@@ -5,7 +5,7 @@ spring:
     virtual:
       enabled: true          # requisições em virtual threads: I/O bloqueante no Mongo sem esgotar threads do Tomcat
   mongodb:
-    uri: ${MONGODB_URI:mongodb://localhost:27017/vinculos?directConnection=true&maxPoolSize=200&minPoolSize=20&waitQueueTimeoutMS=2000&retryWrites=true}
+    uri: ${MONGODB_URI:mongodb://localhost:27017/vinculos?directConnection=true&maxPoolSize=200&minPoolSize=20&waitQueueTimeoutMS=2000&serverSelectionTimeoutMS=5000&retryWrites=true}
   cache:
     type: caffeine
     cache-names: companies,records

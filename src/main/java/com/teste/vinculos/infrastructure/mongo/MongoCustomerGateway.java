@@ -47,10 +47,11 @@ public class MongoCustomerGateway implements CustomerGateway {
     public MongoCustomerGateway(MongoTemplate mongo,
                                 @Value("${app.query.timeout-ms:2000}") long timeoutMs,
                                 @Value("${app.query.slow-ms:200}") long slowMs) {
-        // Leitura no primário com read concern majority: só devolve dado confirmado pela maioria
-        // do replica set (não sofre rollback), independente do que vier na connection string.
+        // Read concern majority: só devolve dado confirmado pela maioria do replica set (não sofre rollback).
+        // primaryPreferred: lê do primário e, se ele cair, de um secundário enquanto ocorre a eleição; como a leitura
+        // é majority, o secundário também só devolve dado confirmado. Fixado no código, não na connection string.
         this.collection = mongo.getCollection(Fields.COLLECTION)
-                .withReadPreference(ReadPreference.primary())
+                .withReadPreference(ReadPreference.primaryPreferred())
                 .withReadConcern(ReadConcern.MAJORITY)
                 .withWriteConcern(WriteConcern.MAJORITY);
         this.timeoutMs = timeoutMs;
