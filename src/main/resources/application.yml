@@ -17,11 +17,18 @@ spring:
 
 server:
   shutdown: graceful
+  forward-headers-strategy: native   # IP do cliente via X-Forwarded-For do proxy reverso (Caddy), só de proxies internos
 
 app:
   query:
     timeout-ms: 2000         # maxTimeMS no servidor: consulta lenta é abortada em vez de acumular
     slow-ms: 200             # acima disso a consulta é logada em WARN
+  rate-limit:
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    per-ip-capacity: 40      # rajada por IP
+    per-ip-per-second: 20    # ritmo sustentado por IP
+    global-capacity: 600     # rajada da instância inteira
+    global-per-second: 300   # ritmo sustentado da instância
 
 seed:
   total-records: 1000000000

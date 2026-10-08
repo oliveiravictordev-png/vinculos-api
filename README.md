@@ -43,7 +43,9 @@ POST /api/v1/customers/records
 
 **Health check:** `GET /actuator/health`, com `/actuator/health/liveness` (o processo está de pé) e `/actuator/health/readiness` (só fica `UP` quando o MongoDB responde). O container Docker usa o readiness no `HEALTHCHECK`.
 
-Erros seguem a RFC 9457 (`application/problem+json`): **400** para dado inválido (ano fora de 1900–2100, tipo desconhecido, dígito verificador errado) e **503** para timeout ou indisponibilidade do banco.
+Erros seguem a RFC 9457 (`application/problem+json`): **400** para dado inválido (ano fora de 1900–2100, tipo desconhecido, dígito verificador errado), **429** acima do rate limit e **503** para timeout ou indisponibilidade do banco.
+
+**Rate limit** em `/api`: até 20 requisições por segundo por IP (rajada de 40) e 300 por segundo na instância (rajada de 600). Acima disso, a API responde 429 com `Retry-After`. O IP considerado é o que o proxy reverso recebeu (`server.forward-headers-strategy: native`), então um `X-Forwarded-For` enviado pelo próprio cliente não burla o limite. Os limites ficam em `app.rate-limit.*`, e o rate limit pode ser desligado com `RATE_LIMIT_ENABLED=false`, por exemplo para o benchmark.
 
 ## Arquitetura
 
@@ -217,8 +219,10 @@ Para gerar tráfego contra a demonstração pública (a VPS tem os clientes de 1
 
 ```bash
 mvn test -Dtest=ApiBenchmark -Dbench.url=https://vinculos.212-28-185-69.sslip.io \
-  -Dbench.first-customer=140000000 -Dbench.customers=20000000 -Dbench.samples=300 -Dbench.requests=3000 -Dbench.concurrency=16
+  -Dbench.first-customer=140000000 -Dbench.customers=20000000 -Dbench.samples=300 -Dbench.requests=3000 -Dbench.concurrency=2
 ```
+
+Com o rate limit ligado, um único IP passa de 20 requisições por segundo com poucas conexões simultâneas. Por isso, contra a VPS, use `-Dbench.concurrency=2`. Para medir a vazão máxima, rode o benchmark contra uma instância com `RATE_LIMIT_ENABLED=false`.
 
 ## Próximos passos sugeridos
 
