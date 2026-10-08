@@ -1,5 +1,6 @@
 package com.teste.vinculos.domain;
 
+/** Tipo do documento do cliente; faz parte da chave de busca. */
 public enum DocumentType {
     CPF,
     CNPJ;

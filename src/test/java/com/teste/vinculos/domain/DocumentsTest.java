@@ -5,6 +5,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DocumentsTest {
 
@@ -43,6 +44,13 @@ class DocumentsTest {
     void normalizesPunctuationAndLowercase() {
         assertThat(Documents.normalize("010.000.001-09")).isEqualTo("01000000109");
         assertThat(Documents.normalize("12.abc.345/01de-35")).isEqualTo("12ABC34501DE35");
+    }
+
+    @Test
+    void rejectsInputLongerThanAFormattedCnpj() {
+        assertThat(Documents.normalize("12.ABC.345/01DE-35")).isEqualTo("12ABC34501DE35");
+        assertThatThrownBy(() -> Documents.normalize("12.ABC.345/01DE-355")).isInstanceOf(InvalidDataException.class);
+        assertThatThrownBy(() -> Documents.normalize("0".repeat(10_000))).isInstanceOf(InvalidDataException.class);
     }
 
     @Test

@@ -43,7 +43,11 @@ POST /api/v1/customers/records
 
 **Health check:** `GET /actuator/health`, com `/actuator/health/liveness` (o processo está de pé) e `/actuator/health/readiness` (só fica `UP` quando o MongoDB responde). O container Docker usa o readiness no `HEALTHCHECK`.
 
-Erros seguem a RFC 9457 (`application/problem+json`): **400** para dado inválido (ano fora de 1900–2100, tipo desconhecido, dígito verificador errado), **429** acima do rate limit e **503** para timeout ou indisponibilidade do banco.
+Erros seguem a RFC 9457 (`application/problem+json`):
+- **400** para dado inválido (ano fora de 1900–2100, tipo desconhecido, dígito verificador errado, documento com mais de 18 caracteres) e para requisição malformada (rota inexistente, método errado, JSON quebrado, content-type errado), esta com a mensagem genérica `Invalid request`. A API nunca responde 404, 405 ou 415, para não ajudar quem tenta mapear rotas.
+- **429** acima do rate limit.
+- **500** para erro inesperado, sem detalhes internos.
+- **503** para timeout ou indisponibilidade do banco.
 
 **Rate limit** em `/api`: até 20 requisições por segundo por IP (rajada de 40) e 300 por segundo na instância (rajada de 600). Acima disso, a API responde 429 com `Retry-After`. O IP considerado é o que o proxy reverso recebeu (`server.forward-headers-strategy: native`), então um `X-Forwarded-For` enviado pelo próprio cliente não burla o limite. Os limites ficam em `app.rate-limit.*`, e o rate limit pode ser desligado com `RATE_LIMIT_ENABLED=false`, por exemplo para o benchmark.
 

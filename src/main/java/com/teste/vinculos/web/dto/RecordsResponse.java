@@ -7,6 +7,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 
+/** Resposta do endpoint 2: uma entrada por empresa solicitada, com os registros do cliente nela (ou lista vazia). */
 public record RecordsResponse(List<Company> companies) {
 
     public record Company(String company, List<Item> records) {

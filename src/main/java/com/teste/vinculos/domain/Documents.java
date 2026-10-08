@@ -6,6 +6,9 @@ package com.teste.vinculos.domain;
  */
 public final class Documents {
 
+    /** Maior entrada aceita: o CNPJ formatado (ex.: 12.ABC.345/01DE-35). Barra entradas abusivas antes de processar. */
+    public static final int MAX_INPUT_LENGTH = 18;
+
     private Documents() {
     }
 
@@ -13,6 +16,9 @@ public final class Documents {
     public static String normalize(String value) {
         if (value == null) {
             throw new InvalidDataException("document is required");
+        }
+        if (value.length() > MAX_INPUT_LENGTH) {
+            throw new InvalidDataException("document must have at most " + MAX_INPUT_LENGTH + " characters");
         }
         var sb = new StringBuilder(value.length());
         for (int i = 0; i < value.length(); i++) {

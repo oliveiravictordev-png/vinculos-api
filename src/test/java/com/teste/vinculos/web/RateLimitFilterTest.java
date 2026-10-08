@@ -1,10 +1,17 @@
 package com.teste.vinculos.web;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.web.servlet.HandlerExceptionResolver;
+import org.springframework.web.servlet.ModelAndView;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -12,21 +19,24 @@ import static org.assertj.core.api.Assertions.assertThat;
 class RateLimitFilterTest {
 
     private final AtomicLong clock = new AtomicLong();
+    private final List<Exception> resolved = new ArrayList<>();
+    private final HandlerExceptionResolver resolver = (request, response, handler, ex) -> {
+        resolved.add(ex);
+        response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
+        return new ModelAndView();
+    };
     private final RateLimitFilter filter = new RateLimitFilter(
-            new RateLimitProperties(true, 3, 1, 100, 100), clock::get);
+            new RateLimitProperties(true, 3, 1, 100, 100), resolver, clock::get);
 
     @Test
-    void allowsBurstThenRejectsWithRetryAfter() throws Exception {
+    void allowsBurstThenDelegatesRejectionToTheExceptionHandler() throws Exception {
         for (int i = 0; i < 3; i++) {
             assertThat(call("10.0.0.1", "/api/v1/customers/companies").getStatus()).isEqualTo(200);
         }
 
-        MockHttpServletResponse rejected = call("10.0.0.1", "/api/v1/customers/companies");
-
-        assertThat(rejected.getStatus()).isEqualTo(429);
-        assertThat(rejected.getHeader("Retry-After")).isEqualTo("1");
-        assertThat(rejected.getContentType()).startsWith("application/problem+json");
-        assertThat(rejected.getContentAsString()).contains("\"status\":429");
+        assertThat(call("10.0.0.1", "/api/v1/customers/companies").getStatus()).isEqualTo(429);
+        assertThat(resolved).singleElement()
+                .isInstanceOfSatisfying(RateLimitExceededException.class, e -> assertThat(e.retryAfterSeconds()).isEqualTo(1));
     }
 
     @Test
@@ -52,7 +62,7 @@ class RateLimitFilterTest {
 
     @Test
     void appliesGlobalLimitAcrossIps() throws Exception {
-        var tight = new RateLimitFilter(new RateLimitProperties(true, 10, 10, 2, 1), clock::get);
+        var tight = new RateLimitFilter(new RateLimitProperties(true, 10, 10, 2, 1), resolver, clock::get);
 
         assertThat(call(tight, "10.0.0.1", "/api/v1/customers/companies").getStatus()).isEqualTo(200);
         assertThat(call(tight, "10.0.0.2", "/api/v1/customers/companies").getStatus()).isEqualTo(200);
@@ -64,6 +74,16 @@ class RateLimitFilterTest {
         for (int i = 0; i < 10; i++) {
             assertThat(call("10.0.0.1", "/actuator/health").getStatus()).isEqualTo(200);
         }
+    }
+
+    @Test
+    void handlerAnswers429WithRetryAfterAndProblemDetail() {
+        ResponseEntity<ProblemDetail> response = new ApiExceptionHandler().rateLimitExceeded(new RateLimitExceededException(3));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("3");
+        assertThat(response.getBody().getTitle()).isEqualTo("Too many requests");
+        assertThat(response.getBody().getDetail()).isEqualTo("Request rate limit exceeded, retry in 3 s");
     }
 
     private MockHttpServletResponse call(String ip, String path) throws Exception {
