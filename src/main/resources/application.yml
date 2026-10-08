@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: vinculos-api
+  threads:
+    virtual:
+      enabled: true          # requisições em virtual threads: I/O bloqueante no Mongo sem esgotar threads do Tomcat
+  mongodb:
+    uri: ${MONGODB_URI:mongodb://localhost:27017/vinculos?directConnection=true&maxPoolSize=200&minPoolSize=20&waitQueueTimeoutMS=2000&retryWrites=true}
+  cache:
+    type: caffeine
+    cache-names: companies,records
+    caffeine:
+      spec: ${CACHE_SPEC:maximumSize=200000,expireAfterWrite=5m,recordStats}
+  mvc:
+    problemdetails:
+      enabled: true
+
+server:
+  shutdown: graceful
+
+app:
+  query:
+    timeout-ms: 2000         # maxTimeMS no servidor: consulta lenta é abortada em vez de acumular
+    slow-ms: 200             # acima disso a consulta é logada em WARN
+
+seed:
+  total-records: 1000000000
+  start-customer: 0          # para retomar uma carga a partir de um cliente
+  batch-size: 10000          # documentos por insertMany
+  workers: 0                 # 0 = número de CPUs
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,caches

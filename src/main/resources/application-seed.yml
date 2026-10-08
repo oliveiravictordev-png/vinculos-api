@@ -1,0 +1,4 @@
+# Profile de carga: sobe sem servidor web, executa a carga e encerra.
+spring:
+  main:
+    web-application-type: none
