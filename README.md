@@ -139,6 +139,38 @@ Erros seguem o mesmo caminho e saem sempre pelo `ApiExceptionHandler`: 400, 429,
 
 ## Endpoints
 
+### Autenticação JWT
+
+Defina os segredos antes de iniciar a API. `JWT_SECRET` deve ter pelo menos 32 bytes e nunca deve ser commitido:
+
+```bash
+export AUTH_ADMIN1_USERNAME=gft-admin
+export AUTH_ADMIN1_PASSWORD='uma-senha-forte-1'
+export AUTH_ADMIN2_USERNAME=bradesco-admin
+export AUTH_ADMIN2_PASSWORD='uma-senha-forte-2'
+export JWT_SECRET='um-segredo-aleatorio-com-pelo-menos-32-bytes'
+```
+
+As duas contas administrativas são criadas em memória na inicialização. Não existe endpoint de cadastro, e nenhuma senha é gravada no MongoDB ou no repositório.
+
+No PowerShell, defina as quatro variáveis `AUTH_ADMIN*` e `JWT_SECRET` com `$env:NOME=...`.
+O login devolve um token HS256 com uma hora de validade por padrão (`JWT_TTL=PT1H`):
+
+```http
+POST /api/v1/auth/token
+Content-Type: application/json
+
+{ "username": "gft-admin", "password": "uma-senha-forte-1" }
+```
+
+Envie o valor de `accessToken` nas consultas protegidas:
+
+```http
+Authorization: Bearer <accessToken>
+```
+
+No Swagger, execute primeiro **Authentication / token**, copie `accessToken`, clique em **Authorize** e cole somente o token. Swagger, OpenAPI e health checks permanecem públicos; os demais endpoints exigem autenticação. Credenciais inválidas, token ausente, expirado, com assinatura ou emissor incorretos retornam `401`.
+
 A chave do cliente é **ano + tipo do documento + valor do documento**. Os endpoints usam `POST` com corpo JSON, para que o CPF/CNPJ nunca apareça na URL (logs de acesso, proxies).
 
 ### 1. Empresas ligadas ao cliente
@@ -182,6 +214,7 @@ Esta é a resposta real da API pública para a chave do enunciado. Uma empresa t
 |---|---|
 | 400 | dado inválido (ano fora de 1900–2100, tipo desconhecido, dígito verificador errado, documento com mais de 18 caracteres) ou requisição malformada (rota inexistente, método errado, JSON quebrado), esta com a mensagem genérica `Invalid request` |
 | 429 | acima do rate limit, com `Retry-After` |
+| 401 | credenciais inválidas ou JWT ausente, expirado ou inválido |
 | 500 | erro inesperado, sem nenhum detalhe interno |
 | 503 | timeout ou indisponibilidade do banco |
 

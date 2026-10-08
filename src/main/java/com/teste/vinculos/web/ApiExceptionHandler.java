@@ -11,6 +11,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.HttpMediaTypeException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -51,6 +52,12 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                 .header(HttpHeaders.RETRY_AFTER, Long.toString(e.retryAfterSeconds()))
                 .body(problem(HttpStatus.TOO_MANY_REQUESTS, "Too many requests", e.getMessage()));
+    }
+
+    @ExceptionHandler(AuthenticationException.class)
+    ProblemDetail unauthorized(AuthenticationException e) {
+        log.debug("Authentication failed: {}", e.getClass().getSimpleName());
+        return problem(HttpStatus.UNAUTHORIZED, "Unauthorized", "Invalid username or password");
     }
 
     // Timeout ou indisponibilidade do banco: falha explícita em vez de resposta parcial.

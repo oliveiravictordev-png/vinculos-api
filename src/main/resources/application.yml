@@ -20,6 +20,14 @@ server:
   forward-headers-strategy: native   # IP do cliente via X-Forwarded-For do proxy reverso (Caddy), só de proxies internos
 
 app:
+  auth:
+    admin-1-username: ${AUTH_ADMIN1_USERNAME:}
+    admin-1-password: ${AUTH_ADMIN1_PASSWORD:}
+    admin-2-username: ${AUTH_ADMIN2_USERNAME:}
+    admin-2-password: ${AUTH_ADMIN2_PASSWORD:}
+    jwt-secret: ${JWT_SECRET:}
+    issuer: ${JWT_ISSUER:vinculos-api}
+    ttl: ${JWT_TTL:PT1H}
   query:
     timeout-ms: 2000         # maxTimeMS no servidor: consulta lenta é abortada em vez de acumular
     slow-ms: 200             # acima disso a consulta é logada em WARN

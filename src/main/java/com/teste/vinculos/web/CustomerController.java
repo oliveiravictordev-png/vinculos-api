@@ -10,6 +10,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -21,6 +22,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/v1/customers")
 @Tag(name = "Customers", description = "Consultas por chave do cliente: ano + tipo do documento + documento")
+@SecurityRequirement(name = "bearerAuth")
+@ApiResponse(responseCode = "401", description = "JWT ausente, expirado ou invÃ¡lido", content = @Content)
 @ApiResponse(responseCode = "400", description = ApiDocs.INVALID_DATA,
         content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
 @ApiResponse(responseCode = "429", description = "Acima do rate limit; tente de novo após o Retry-After",
