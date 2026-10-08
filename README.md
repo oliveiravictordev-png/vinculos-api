@@ -48,7 +48,7 @@ flowchart LR
 
     subgraph VPS["VPS (Docker)"]
         C --> A["vinculos-api<br/>Spring Boot 4 · Java 25<br/>rate limit · cache Caffeine"]
-        A -->|"driver síncrono<br/>read concern majority"| M[("MongoDB 8.0<br/>100 milhões de registros")]
+        A -->|"driver síncrono<br/>primaryPreferred + majority"| M[("MongoDB 8.0<br/>replica set de 3 nós<br/>100 milhões de registros")]
         T["timer systemd<br/>auto-deploy"] -.->|"rebuild + rollback"| A
     end
 
@@ -66,7 +66,7 @@ flowchart LR
 ```
 
 - **Front e API são projetos separados**, com build e deploy próprios. O front chama `/api/*` no próprio domínio da Vercel, e a Vercel repassa para a VPS. Para o navegador há uma origem só, então não é preciso CORS.
-- **Na VPS**, o Caddy faz o HTTPS e encaminha para o container da API. O MongoDB fica numa rede interna do Docker e não é exposto à internet.
+- **Na VPS**, o Caddy faz o HTTPS e encaminha para o container da API. O MongoDB roda como **replica set de 3 nós** numa rede interna do Docker, sem exposição à internet. Se o primário cair, a API continua respondendo ([alta disponibilidade](#alta-disponibilidade)).
 - **A API manda traces, métricas e logs ao Elastic** pelo agente OpenTelemetry, sem nenhuma mudança no código.
 - **O deploy é puxado pela VPS:** um timer verifica a `main` a cada 2 minutos e só publica commits cuja CI passou. Nenhuma credencial da VPS fica no GitHub.
 - **A prova de volume roda numa máquina local** com 1 bilhão de registros. A demonstração pública usa 100 milhões, o que cabe com folga na VPS.
@@ -215,7 +215,7 @@ A mesma API e a mesma carga, que é determinística (o cliente N gera sempre os 
 | | 1 bilhão (local) | 100 milhões (VPS, pública) | 1 milhão (MongoDB Atlas) |
 |---|---|---|---|
 | objetivo | provar o requisito de volume | demonstração pública | primeiro teste em banco gerenciado |
-| MongoDB | 8.0 portátil, 14 GB de cache | 8.0 em Docker, 3 GB e 2 CPUs | Atlas Free (M0), São Paulo |
+| MongoDB | 8.0 portátil, 14 GB de cache | 8.0 em Docker, replica set de 3 nós | Atlas Free (M0), São Paulo |
 | inserção | 2.189 s (~457 mil docs/s) | 250 s (~400 mil docs/s) | 84 s (~12 mil docs/s, pela internet) |
 | índice | 2.492 s | 143 s | 22 s |
 | dados em disco | 23,2 GB (zstd) | 2,3 GB (zstd) | 41 MB (compressão do Atlas) |
@@ -315,6 +315,28 @@ Como os dados são gerados:
 
 Opções do benchmark: `-Dbench.first-customer` e `-Dbench.customers` (faixa carregada), `-Dbench.samples`, `-Dbench.concurrency` e `-Dbench.requests`. Contra a VPS, use `make bench-public`, que respeita o rate limit.
 
+## Alta disponibilidade
+
+Na VPS, o MongoDB roda como **replica set de 3 nós** (`deploy/docker-compose.yml`):
+- o nó `mongo` tem prioridade 2 e mais cache;
+- `mongo2` e `mongo3` recebem cópia completa dos dados;
+- o serviço `mongo-init` configura o replica set e pode rodar quantas vezes for preciso sem efeito colateral. A migração do antigo nó único foi feita sem recarregar nada: os dois nós novos copiaram os 100 milhões do primário em ~6,5 minutos.
+
+**Como a API atravessa uma queda:**
+1. A leitura usa `primaryPreferred` com read concern `majority`: lê do primário e, se ele cair, de um secundário. Como a leitura é `majority`, o secundário também só devolve dado confirmado pela maioria, que não sofre rollback.
+2. O driver refaz automaticamente uma leitura interrompida (retry de leitura), agora noutro nó.
+3. Os dois nós restantes elegem um novo primário em segundos.
+4. Se nenhum nó estiver disponível, a requisição desiste em 5 s (`serverSelectionTimeoutMS`) e responde 503, em vez de travar.
+
+**Teste de falha automático (CI):** o `ReplicaSetFailoverTest` sobe 3 nós, faz requisições sem parar por 30 s e mata o primário (kill) no meio. Ele verifica que só existem respostas 200 ou 503, que um novo primário é eleito e que tudo volta a 200 em até 15 s. Roda a cada push.
+
+| teste de falha | requisições | depois da queda | respostas diferentes de 200 | primário |
+|---|---|---|---|---|
+| CI (Testcontainers) | 1.418 | 1.187 | **0** | nó 0 → nó 1 |
+| VPS pela internet, primário morto por 30 s e religado | 520 | 451 | **0** (latência máxima de 0,16 s) | `mongo` → secundário → `mongo` de novo |
+
+No teste da VPS, cada requisição usou um CPF diferente para nunca cair no cache, ou seja, todas consultaram o MongoDB de verdade. O nó religado voltou, se atualizou e retomou o primário sozinho, por ter prioridade.
+
 ## Desempenho e cache
 
 - **Driver MongoDB direto** (`MongoCollection<Document>` com projeção), sem mapeamento de entidades.
@@ -339,7 +361,7 @@ Hoje há **uma única instância** da API, e os dados não mudam depois da carga
 
 - **Validação de entrada no domínio:** os dígitos verificadores de CPF e CNPJ são conferidos (inclusive no CNPJ alfanumérico), a pontuação é normalizada e os tamanhos têm limite.
 - **Validação de schema no MongoDB** (`$jsonSchema` estrito, gerado a partir das constantes do código): o banco recusa documentos fora do formato, venham de onde vierem.
-- **Read concern `majority` + leitura no primário:** só sai dado confirmado pela maioria do replica set, que não sofre rollback.
+- **Read concern `majority` + `primaryPreferred`:** só sai dado confirmado pela maioria do replica set, que não sofre rollback, mesmo quando a leitura vai a um secundário durante uma falha do primário.
 - **Dinheiro em centavos (`long`)**, exposto como `BigDecimal`: nenhum erro de ponto flutuante.
 - **Carga idempotente:** com o `_id` determinístico, reexecutar ou retomar a carga nunca duplica registros. Há teste cobrindo isso.
 - **Falha explícita:** timeout ou erro do banco viram 503, nunca uma resposta parcial.
@@ -370,6 +392,7 @@ O serviço aparece como `vinculos-api`, no ambiente `vps-demo`. As consultas ES|
 | unidade | domínio, casos de uso, rate limit, validador do MongoDB | JUnit 5 + AssertJ, com fakes |
 | web / contrato HTTP | formato e status dos erros, cabeçalhos de segurança | `@WebMvcTest` + `MockMvcTester` |
 | integração | os dois endpoints sobre um MongoDB real, recarga idempotente | `@SpringBootTest` + Testcontainers |
+| falha | queda do primário de um replica set de 3 nós sob carga | `ReplicaSetFailoverTest` (Testcontainers, Linux/CI) |
 | carga / desempenho | latência e vazão | `ApiBenchmark` (opt-in) |
 
 A CI (GitHub Actions) roda `make verify` a cada push, com Docker, então a integração usa um MongoDB real. Ela publica os relatórios (JaCoCo e Surefire) como artefato e **falha** se a cobertura cair abaixo de 85% das linhas ou 75% das ramificações. Localmente, `make test` gera `target/site/jacoco/index.html` e `target/reports/surefire.html`.
@@ -417,7 +440,7 @@ No Windows, o `make` funciona pelo WSL ou pelo Git Bash. Os comandos `mvn`/`dock
 
 ```bash
 git clone https://github.com/oliveiravictordev-png/vinculos-api.git /opt/vinculos && cd /opt/vinculos
-make seed-vps                     # MongoDB + carga de 100 milhões (antes da API, para o índice ser criado uma vez só)
+make seed-vps                     # replica set de 3 nós + carga de 100 milhões (antes da API, para o índice ser criado uma vez só)
 make deploy-vps                   # sobe a API
 cp deploy/systemd/* /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now vinculos-deploy.timer
 ```

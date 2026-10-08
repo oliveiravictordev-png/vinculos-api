@@ -72,7 +72,8 @@ Camadas no estilo clean/hexagonal. **A dependência só aponta para dentro:** `w
 - **Coleção clusterizada por `_id`** (sem índice `_id` separado), validada por `$jsonSchema` estrito, com zstd. Se o servidor recusar `storageEngine` (Atlas), a criação cai para a compressão padrão.
 - **Um índice:** `{a, t, v, e}`. Toda consulta nova precisa usar esse índice (confira com `explain`) ou justificar outro índice, medindo o custo em disco e RAM.
 - **Dinheiro em centavos (`long`)**, exposto como `BigDecimal`. Nunca `double`.
-- **Leitura confiável:** primário + read concern `majority`, `maxTimeMS` em toda consulta, projeção só dos campos necessários.
+- **Leitura confiável e disponível:** read concern `majority` + `primaryPreferred` (um secundário responde durante a eleição de um novo primário, sem dado que possa sofrer rollback), `maxTimeMS` em toda consulta, `serverSelectionTimeoutMS=5000` na URI e projeção só dos campos necessários.
+- **Replica set de 3 nós na VPS** (`mongo` com prioridade 2, `mongo2`, `mongo3`); o `mongo-init` é idempotente. O health check aceita PRIMARY ou SECONDARY, porque um nó que volta de uma falha volta como secundário. Mudança que afete a disponibilidade precisa passar no `ReplicaSetFailoverTest`.
 - **Carga (`seed`)** determinística e idempotente (`_id` derivado do cliente); o índice é criado no fim da carga, nunca antes.
 
 ## Desempenho
@@ -99,6 +100,7 @@ Camadas no estilo clean/hexagonal. **A dependência só aponta para dentro:** `w
 | unidade (maioria) | `domain`, `application`, `TokenBucket`, `MongoSchema` | JUnit 5 + AssertJ, fakes em vez de mocks quando possível (`FakeGateway`) |
 | web / contrato HTTP | `ApiErrorsTest`, `RateLimitFilterTest` | `@WebMvcTest` + `MockMvcTester` |
 | integração | `CustomerApiTest` | `@SpringBootTest` + Testcontainers (MongoDB real); é ignorado sem Docker |
+| falha / alta disponibilidade | `ReplicaSetFailoverTest` | 3 nós via Testcontainers com rede do host (roda só no Linux/CI): mata o primário sob carga |
 | carga / desempenho | `ApiBenchmark` | opt-in: só roda com `-Dbench.url=...` |
 
 - Toda regra nova ou bug corrigido entra com teste. Nome do teste descreve o comportamento (`unknownPathIsA400NotA404`).
