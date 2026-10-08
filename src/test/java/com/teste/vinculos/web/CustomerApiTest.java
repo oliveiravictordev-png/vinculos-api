@@ -29,8 +29,16 @@ import java.util.stream.Collectors;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** Sobe a API contra um MongoDB real (replica set via Testcontainers). Ignorado se não houver Docker. */
-@SpringBootTest
-@AutoConfigureMockMvc
+@SpringBootTest(properties = {
+        "app.auth.admin-1-username=test-admin-1",
+        "app.auth.admin-1-password=test-password-1",
+        "app.auth.admin-2-username=test-admin-2",
+        "app.auth.admin-2-password=test-password-2",
+        "app.auth.jwt-secret=01234567890123456789012345678901",
+        "app.auth.issuer=vinculos-api-test",
+        "app.auth.ttl=PT5M"
+})
+@AutoConfigureMockMvc(addFilters = false)
 @Testcontainers(disabledWithoutDocker = true)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class CustomerApiTest {

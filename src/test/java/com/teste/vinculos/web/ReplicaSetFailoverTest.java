@@ -38,8 +38,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  * que nenhuma falha vira 500 e que tudo volta a 200 logo depois. Os nós usam a rede do host para que o driver,
  * fora do Docker, alcance cada membro pelo endereço do replica set; por isso o teste roda só no Linux (CI).
  */
-@SpringBootTest(properties = {"spring.cache.type=none", "app.rate-limit.enabled=false"})
-@AutoConfigureMockMvc
+@SpringBootTest(properties = {
+        "spring.cache.type=none",
+        "app.rate-limit.enabled=false",
+        "app.auth.admin-1-username=test-admin-1",
+        "app.auth.admin-1-password=test-password-1",
+        "app.auth.admin-2-username=test-admin-2",
+        "app.auth.admin-2-password=test-password-2",
+        "app.auth.jwt-secret=01234567890123456789012345678901",
+        "app.auth.issuer=vinculos-api-test",
+        "app.auth.ttl=PT5M"
+})
+@AutoConfigureMockMvc(addFilters = false)
 @EnabledOnOs(OS.LINUX)
 @Testcontainers(disabledWithoutDocker = true)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
