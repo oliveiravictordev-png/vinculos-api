@@ -2,7 +2,7 @@
 
 Consultas para montar visualizações e dashboards da `vinculos-api` no Elastic: **Dashboard → Create visualization (query)**, cole a consulta e escolha o tipo de gráfico. Os dados chegam pelo agente EDOT Java (OpenTelemetry), com `service.name = vinculos-api`.
 
-> **Antes de tudo, rode a consulta 0.** Os nomes dos campos de dados OpenTelemetry podem variar conforme a versão do Elastic. Se alguma consulta der `Unknown column`, veja o nome certo na saída da consulta 0. Os equivalentes mais comuns são `log.level` ↔ `severity_text`, `message` ↔ `body.text` e `service.name` ↔ `resource.attributes.service.name`.
+Todas as consultas abaixo foram **executadas contra os dados reais** do projeto (Elastic Serverless, dados OpenTelemetry nativos). As de consultas lentas e de falhas do banco ficam vazias enquanto esses eventos não acontecem; o padrão `GROK` delas foi validado com linhas de exemplo.
 
 ## Logs (`FROM logs*,-logstash*,filebeat-*`)
 
@@ -11,11 +11,12 @@ O que a API registra:
 - **ERROR:** `MongoDB query failed (code N)`, quando a API responde 503, e `Unexpected error`, quando responde 500.
 - **INFO:** subida da aplicação, criação da coleção e do índice.
 
-### 0. Descobrir os campos
+### 0. Últimos logs (para conferir os dados)
 
 ```esql
 FROM logs*,-logstash*,filebeat-*
 | WHERE service.name == "vinculos-api"
+| KEEP @timestamp, log.level, message, scope.name, trace.id
 | SORT @timestamp DESC
 | LIMIT 20
 ```
@@ -77,25 +78,25 @@ FROM logs*,-logstash*,filebeat-*
 | LIMIT 50
 ```
 
-## Métricas de requisições (`FROM traces-*`)
+## Requisições (`FROM traces*`)
 
-Cada requisição HTTP é um span de servidor. A duração vem em nanossegundos.
+Cada requisição HTTP é um span de servidor (`kind == "Server"`), com a duração em nanossegundos. O health check (`/actuator/...`) fica de fora para não distorcer os números.
 
-### 7. Latência por endpoint: p50, p95 e p99 (tabela)
+### 7. Latência por endpoint da API: p50, p95 e p99 em ms (tabela)
 
 ```esql
-FROM traces-*
-| WHERE service.name == "vinculos-api" AND kind == "Server"
+FROM traces*
+| WHERE service.name == "vinculos-api" AND kind == "Server" AND attributes.http.route LIKE "/api/*"
 | EVAL ms = duration / 1000000.0
-| STATS requests = COUNT(*), p50 = PERCENTILE(ms, 50), p95 = PERCENTILE(ms, 95), p99 = PERCENTILE(ms, 99) BY name
+| STATS requests = COUNT(*), p50 = ROUND(PERCENTILE(ms, 50), 2), p95 = ROUND(PERCENTILE(ms, 95), 2), p99 = ROUND(PERCENTILE(ms, 99), 2) BY endpoint = name
 | SORT requests DESC
 ```
 
 ### 8. Requisições por status HTTP ao longo do tempo (barras empilhadas: 200, 400, 429, 503)
 
 ```esql
-FROM traces-*
-| WHERE service.name == "vinculos-api" AND kind == "Server"
+FROM traces*
+| WHERE service.name == "vinculos-api" AND kind == "Server" AND NOT attributes.http.route LIKE "/actuator*"
 | STATS requests = COUNT(*) BY minute = BUCKET(@timestamp, 1 minute), status = attributes.http.response.status_code
 | SORT minute
 ```
@@ -103,30 +104,66 @@ FROM traces-*
 ### 9. Rate limit: respostas 429 por minuto (barras)
 
 ```esql
-FROM traces-*
-| WHERE service.name == "vinculos-api" AND attributes.http.response.status_code == 429
+FROM traces*
+| WHERE service.name == "vinculos-api" AND kind == "Server" AND attributes.http.response.status_code == 429
 | STATS rejected = COUNT(*) BY minute = BUCKET(@timestamp, 1 minute)
 | SORT minute
 ```
 
-### 10. Tempo das consultas ao MongoDB (tabela)
+### 10. Tentativas em rotas inexistentes (segurança; tabela)
+
+A API responde 400 a qualquer rota desconhecida. Volume alto aqui indica alguém tentando mapear a API.
 
 ```esql
-FROM traces-*
-| WHERE service.name == "vinculos-api" AND attributes.db.system.name == "mongodb"
-| EVAL ms = duration / 1000000.0
-| STATS operations = COUNT(*), p50 = PERCENTILE(ms, 50), p95 = PERCENTILE(ms, 95), p99 = PERCENTILE(ms, 99) BY name
+FROM traces*
+| WHERE service.name == "vinculos-api" AND kind == "Server" AND attributes.http.route == "/**"
+| STATS attempts = COUNT(*), last_seen = MAX(@timestamp) BY method = attributes.http.request.method
 ```
 
-Se `attributes.db.system.name` não existir, use `attributes.db.system`. Ele muda conforme a versão da convenção semântica do OpenTelemetry.
-
-### 11. Taxa de erro do servidor (métrica, em %)
+### 11. Taxa de erro do servidor em % (métrica)
 
 ```esql
-FROM traces-*
-| WHERE service.name == "vinculos-api" AND kind == "Server"
+FROM traces*
+| WHERE service.name == "vinculos-api" AND kind == "Server" AND NOT attributes.http.route LIKE "/actuator*"
 | STATS total = COUNT(*), server_errors = SUM(CASE(attributes.http.response.status_code >= 500, 1, 0))
 | EVAL error_rate_pct = ROUND(100.0 * server_errors / total, 2)
+```
+
+### 12. Tempo das consultas ao MongoDB em ms (tabela)
+
+`distinct` é o endpoint 1 e `find` é o endpoint 2. As operações do health check (`hello`, `listDatabases`) ficam de fora.
+
+```esql
+FROM traces*
+| WHERE service.name == "vinculos-api" AND attributes.db.system == "mongodb" AND attributes.db.operation IN ("distinct", "find")
+| EVAL ms = duration / 1000000.0
+| STATS operations = COUNT(*), p50 = ROUND(PERCENTILE(ms, 50), 2), p95 = ROUND(PERCENTILE(ms, 95), 2), p99 = ROUND(PERCENTILE(ms, 99), 2) BY operation = attributes.db.operation
+```
+
+## Métricas da aplicação (`FROM metrics*`)
+
+### 13. Taxa de acerto do cache por endpoint em % (métrica/tabela)
+
+`cache.gets` é um contador acumulado desde a subida de cada instância, com as dimensões `cache` (companies/records) e `result` (hit/miss).
+
+```esql
+FROM metrics*
+| WHERE service.name == "vinculos-api" AND cache.gets IS NOT NULL
+| STATS gets = MAX(TO_DOUBLE(cache.gets)) BY service.instance.id, cache, result
+| STATS hits = SUM(CASE(result == "hit", gets, 0.0)), total = SUM(gets) BY cache
+| EVAL hit_ratio_pct = ROUND(100.0 * hits / total, 1)
+```
+
+### 14. Heap da JVM em MB ao longo do tempo (linhas)
+
+O heap vem separado por área de memória: primeiro soma as áreas em cada medição, depois pega o máximo do intervalo.
+
+```esql
+FROM metrics*
+| WHERE service.name == "vinculos-api" AND attributes.jvm.memory.type == "heap" AND jvm.memory.used IS NOT NULL
+| STATS heap = SUM(jvm.memory.used) BY @timestamp, service.instance.id
+| STATS heap_mb = ROUND(MAX(heap) / 1048576.0, 1) BY minute = BUCKET(@timestamp, 10 minutes)
+| SORT minute
 ```
 
 ## Gerar dados para os gráficos

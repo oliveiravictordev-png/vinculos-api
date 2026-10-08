@@ -51,6 +51,9 @@ management:
 
 springdoc:
   show-actuator: true        # o health check aparece no Swagger
+  api-docs:
+    enabled: true            # documentação pública é intencional (explícito evita o WARN do springdoc a cada subida)
   swagger-ui:
+    enabled: true
     path: /swagger-ui.html
     operations-sorter: method
