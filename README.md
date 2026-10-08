@@ -187,7 +187,7 @@ Com a API rodando sobre a base carregada:
 mvn test -Dtest=ApiBenchmark -Dbench.url=http://localhost:8080
 ```
 
-Sorteia 2.000 chaves entre os clientes carregados e mede p50/p95/p99 dos dois endpoints, com e sem o cache da API, além da vazão do endpoint 1 com 64 requisições simultâneas. Opções: `-Dbench.customers` (clientes carregados, padrão 200 milhões), `-Dbench.samples`, `-Dbench.concurrency` e `-Dbench.requests`. Sem `bench.url`, o teste é ignorado.
+Sorteia 2.000 chaves entre os clientes carregados e mede p50/p95/p99 dos dois endpoints, com e sem o cache da API, além da vazão do endpoint 1 com 64 requisições simultâneas. Opções: `-Dbench.first-customer` e `-Dbench.customers` (faixa de clientes carregados; padrão a partir de 0, com 200 milhões), `-Dbench.samples`, `-Dbench.concurrency` e `-Dbench.requests`. Sem `bench.url`, o teste é ignorado.
 
 ## Deploy na VPS
 
@@ -202,6 +202,23 @@ docker compose up -d --build api
 ```
 
 A carga vem antes da API porque a API, ao subir, cria o índice. Assim ele é criado uma vez só, no fim da carga.
+
+### Observabilidade (Elastic + OpenTelemetry)
+
+A imagem traz o agente OpenTelemetry da Elastic (EDOT Java), que só é carregado quando `OTEL_EXPORTER_OTLP_ENDPOINT` está definido. Para ligar, copie `deploy/.env.example` para `deploy/.env` na VPS e preencha o endpoint OTLP e a chave de API do Elastic Observability. Sem mudar o código, o agente envia:
+
+- **Traces:** cada requisição HTTP, com a consulta ao MongoDB como span filho. Os valores das consultas são substituídos por `?`, então nenhum CPF/CNPJ sai da API.
+- **Métricas:** JVM (heap, GC, threads, CPU) e latência e volume das requisições HTTP, a cada 15 s.
+- **Logs:** os do Log4j2, com o documento já mascarado.
+
+No Elastic, o serviço aparece como `vinculos-api`, no ambiente `vps-demo`.
+
+Para gerar tráfego contra a demonstração pública (a VPS tem os clientes de 140 a 160 milhões):
+
+```bash
+mvn test -Dtest=ApiBenchmark -Dbench.url=https://vinculos.212-28-185-69.sslip.io \
+  -Dbench.first-customer=140000000 -Dbench.customers=20000000 -Dbench.samples=300 -Dbench.requests=3000 -Dbench.concurrency=16
+```
 
 ## Próximos passos sugeridos
 

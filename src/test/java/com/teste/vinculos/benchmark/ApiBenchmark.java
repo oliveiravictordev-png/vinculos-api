@@ -30,6 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ApiBenchmark {
 
     private static final String BASE_URL = System.getProperty("bench.url");
+    // Faixa de clientes carregados: [FIRST_CUSTOMER, FIRST_CUSTOMER + CUSTOMERS). Na VPS: 140 mi + 20 mi.
+    private static final long FIRST_CUSTOMER = Long.getLong("bench.first-customer", 0L);
     private static final long CUSTOMERS = Long.getLong("bench.customers", 200_000_000L);
     private static final int SAMPLES = Integer.getInteger("bench.samples", 2_000);
     private static final int CONCURRENCY = Integer.getInteger("bench.concurrency", 64);
@@ -40,10 +42,10 @@ class ApiBenchmark {
     @Test
     void measuresLatencyAndThroughput() throws Exception {
         var random = new SplittableRandom(42);
-        List<Long> customers = random.longs(SAMPLES, 0, CUSTOMERS).boxed().distinct().toList();
+        List<Long> customers = random.longs(SAMPLES, FIRST_CUSTOMER, FIRST_CUSTOMER + CUSTOMERS).boxed().distinct().toList();
 
         // Aquecimento da JVM da API com chaves fora da amostra.
-        random.longs(200, 0, CUSTOMERS).forEach(c -> call("/companies", companiesBody(c)));
+        random.longs(200, FIRST_CUSTOMER, FIRST_CUSTOMER + CUSTOMERS).forEach(c -> call("/companies", companiesBody(c)));
 
         long[] companiesCold = measure(customers, c -> call("/companies", companiesBody(c)));
         long[] companiesWarm = measure(customers, c -> call("/companies", companiesBody(c)));
@@ -63,7 +65,7 @@ class ApiBenchmark {
 
     // Vazão com chaves novas a cada requisição (quase sempre sem cache), N requisições simultâneas.
     private void throughput(SplittableRandom random) throws Exception {
-        long[] keys = random.longs(THROUGHPUT_REQUESTS, 0, CUSTOMERS).toArray();
+        long[] keys = random.longs(THROUGHPUT_REQUESTS, FIRST_CUSTOMER, FIRST_CUSTOMER + CUSTOMERS).toArray();
         var next = new AtomicInteger();
         var errors = new AtomicInteger();
         long start = System.nanoTime();
