@@ -67,8 +67,8 @@ deploy-vps: ## (Na VPS, em /opt/vinculos) atualiza o código e sobe MongoDB + AP
 	git pull --ff-only
 	cd deploy && docker compose up -d --build
 
-seed-vps: ## (Na VPS, em /opt/vinculos) carga de 100 mi registros (clientes 140-160 mi, com a chave do enunciado)
-	cd deploy && docker compose up -d mongo && docker compose run --rm api --spring.profiles.active=seed \
+seed-vps: ## (Na VPS, em /opt/vinculos) replica set de 3 nós + carga de 100 mi registros (clientes 140-160 mi)
+	cd deploy && docker compose up -d mongo mongo2 mongo3 mongo-init && docker compose run --rm api --spring.profiles.active=seed \
 		--seed.start-customer=140000000 --seed.total-records=800000000 --seed.workers=2
 
 clean: ## Remove os artefatos de build (target/)

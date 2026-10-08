@@ -1,29 +1,64 @@
-# Demonstração pública na VPS: MongoDB (replica set de 1 nó) + API, com recursos limitados porque a VPS é
+# Demonstração pública na VPS: MongoDB em replica set de 3 nós + API, com recursos limitados porque a VPS é
 # compartilhada. Nenhuma porta é publicada no host: a API entra na rede do Caddy que já atende 80/443
-# (rede externa "deploy_default") com o nome vinculos-api. Passo a passo no README, seção "Deploy na VPS".
+# (rede externa "deploy_default") com o nome vinculos-api. Passo a passo no README, seção "Deploy".
+#
+# Se o primário cair, os outros dois elegem um novo em segundos, e a API continua lendo de um secundário
+# (primaryPreferred + read concern majority) durante a eleição. O nó "mongo" tem prioridade e mais cache.
 name: vinculos
+
+x-mongo: &mongo
+  image: mongo:8.0
+  restart: unless-stopped
+  # Saudável como PRIMARY ou SECONDARY (depois de uma falha, o nó 1 pode voltar como secundário).
+  healthcheck:
+    test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.hello().isWritablePrimary || db.hello().secondary ? 0 : 1)"]
+    interval: 5s
+    timeout: 10s
+    retries: 30
+    start_period: 10s
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
 
 services:
   mongo:
-    image: mongo:8.0
+    <<: *mongo
     command: ["--replSet", "rs0", "--bind_ip_all", "--wiredTigerCacheSizeGB", "1.5"]
-    restart: unless-stopped
     volumes:
       - mongo-data:/data/db
     deploy:
       resources:
-        limits: { cpus: "2", memory: 3g }
-    # Só fica "healthy" como PRIMARY; na primeira subida inicia o replica set.
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval",
-             "try { if (rs.status().myState !== 1) quit(1) } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'mongo:27017'}]}); quit(1) }"]
-      interval: 5s
-      timeout: 10s
-      retries: 30
-      start_period: 10s
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
+        limits: { cpus: "2", memory: 2560m }
+
+  mongo2:
+    <<: *mongo
+    command: ["--replSet", "rs0", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.5"]
+    volumes:
+      - mongo2-data:/data/db
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 1536m }
+
+  mongo3:
+    <<: *mongo
+    command: ["--replSet", "rs0", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.5"]
+    volumes:
+      - mongo3-data:/data/db
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 1536m }
+
+  # Inicia o replica set ou acrescenta os membros que faltam (idempotente).
+  mongo-init:
+    image: mongo:8.0
+    restart: "no"
+    depends_on:
+      mongo: { condition: service_started }
+      mongo2: { condition: service_started }
+      mongo3: { condition: service_started }
+    volumes:
+      - ./mongo-init.js:/mongo-init.js:ro
+    command: ["mongosh", "--host", "mongo", "--quiet", "/mongo-init.js"]
 
   api:
     build: ..
@@ -38,7 +73,7 @@ services:
       - path: .env
         required: false
     environment:
-      MONGODB_URI: mongodb://mongo:27017/vinculos?directConnection=true&maxPoolSize=50&minPoolSize=5&waitQueueTimeoutMS=2000&retryWrites=true
+      MONGODB_URI: mongodb://mongo:27017,mongo2:27017,mongo3:27017/vinculos?replicaSet=rs0&maxPoolSize=50&minPoolSize=5&waitQueueTimeoutMS=2000&serverSelectionTimeoutMS=5000&retryWrites=true
       ACTUATOR_ENDPOINTS: health      # em público, só o health check (sem metrics/caches)
       JAVA_OPTS: -XX:MaxRAMPercentage=70
       CACHE_SPEC: maximumSize=50000,expireAfterWrite=5m,recordStats   # cabe no heap de ~700 MB do container
@@ -64,3 +99,5 @@ networks:
 
 volumes:
   mongo-data:
+  mongo2-data:
+  mongo3-data:
