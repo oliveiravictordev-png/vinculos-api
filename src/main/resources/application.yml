@@ -33,4 +33,17 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,metrics,caches
+        include: ${ACTUATOR_ENDPOINTS:health,metrics,caches}
+  endpoint:
+    health:
+      probes:
+        enabled: true        # /actuator/health/liveness e /actuator/health/readiness
+      group:
+        readiness:
+          include: readinessState,mongo   # só fica pronta quando o MongoDB responde
+
+springdoc:
+  show-actuator: true        # o health check aparece no Swagger
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
