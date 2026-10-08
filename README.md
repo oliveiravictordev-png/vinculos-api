@@ -96,6 +96,32 @@ Coleção `vinculos`: um documento por registro (cliente × empresa × dado). A 
 - **`maxTimeMS` de 2 s** em toda consulta: uma consulta lenta é abortada no servidor em vez de acumular carga. Consultas acima de 200 ms são logadas em WARN.
 - **Log4j2 com AsyncLogger (Disruptor):** a thread da requisição não espera pelo I/O de log.
 
+### Cache: por que Caffeine e não Redis
+
+O cache fica dentro da API (Caffeine), e não num Redis, porque hoje há **uma única instância** da API:
+
+| | Caffeine (escolhido) | Redis |
+|---|---|---|
+| Acerto no cache | microssegundos, sem serialização | ~0,5–1 ms (rede + serialização) |
+| Requisições simultâneas da mesma chave | `sync=true` já agrupa em uma consulta | exige implementação própria |
+| Compartilhado entre instâncias | não | sim |
+| Sobrevive a deploy | não | sim |
+| Custo operacional | nenhum | mais um serviço e mais RAM |
+
+Os dados não mudam depois da carga, então não há invalidação a coordenar entre instâncias. O cache também só acelera consultas **repetidas**: entre 200 milhões de clientes, uma chave nova quase nunca está em cache, e quem segura a latência nesse caso é o índice do MongoDB.
+
+**Quando trocar:** com várias instâncias da API atrás de um balanceador, o caminho é cache em dois níveis: Caffeine como L1, por instância, e Redis como L2, compartilhado.
+
+**Medido na VPS** (chave fora do cache, requisições disparadas ao mesmo tempo dentro do servidor; a contagem de consultas vem do contador de uso do índice, `$indexStats`):
+
+| requisições simultâneas, mesma chave | respostas | tempo (mín–máx) | consultas ao MongoDB |
+|---|---|---|---|
+| 8 | 8 × 200 | 8–13 ms | **1** |
+| 50 | 50 × 200 | 20–177 ms | **1** |
+| 1, repetindo a chave já consultada | 200 | 4 ms | **0** |
+
+Nenhuma requisição falha nem espera o tempo limite: a primeira consulta o banco e as demais recebem o mesmo resultado assim que ele chega.
+
 ## Confiança nos dados
 
 - **Validação de entrada no domínio:** os dígitos verificadores de CPF e CNPJ são conferidos (inclusive no CNPJ alfanumérico), e a normalização remove pontuação.
@@ -180,4 +206,5 @@ A carga vem antes da API porque a API, ao subir, cria o índice. Assim ele é cr
 ## Próximos passos sugeridos
 
 - Sharding por `{ a: 1, t: 1, v: 1 }` se o volume crescer além de um nó.
+- Redis como cache L2 compartilhado, mantendo o Caffeine como L1, quando a API tiver mais de uma instância (ver "Cache: por que Caffeine e não Redis").
 - Endpoint `/actuator/prometheus` (micrometer-registry-prometheus) para observabilidade.
