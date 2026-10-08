@@ -100,7 +100,9 @@ Camadas no estilo clean/hexagonal. **A dependência só aponta para dentro:** `w
 | carga / desempenho | `ApiBenchmark` | opt-in: só roda com `-Dbench.url=...` |
 
 - Toda regra nova ou bug corrigido entra com teste. Nome do teste descreve o comportamento (`unknownPathIsA400NotA404`).
-- `mvn test` precisa passar antes de qualquer commit.
+- `make test` precisa passar antes de qualquer commit.
+- **Cobertura:** relatórios em `target/site/jacoco/index.html` (JaCoCo) e `target/reports/surefire.html` (Surefire). O `make verify` (o que a CI roda) **falha** abaixo de 85% de linhas ou 75% de ramificações. Não baixe esses limites para fazer um build passar: escreva o teste.
+- **CI:** `.github/workflows/ci.yml` roda `make verify` a cada push, com Docker (integração com MongoDB real), e publica os relatórios.
 
 ## Observabilidade
 
@@ -110,11 +112,14 @@ Camadas no estilo clean/hexagonal. **A dependência só aponta para dentro:** `w
 
 ## Como rodar
 
+Os comandos ficam no `Makefile`; `make` lista todos. Comando novo de rotina (rodar, testar, carregar, publicar) entra no `Makefile` com a descrição `## ...`, e não só no README.
+
 ```bash
-docker compose up -d                 # MongoDB local (replica set de 1 nó)
-mvn test                             # testes (os de integração precisam de Docker)
-mvn spring-boot:run                  # API em http://localhost:8080 (Swagger em /swagger-ui.html)
-java -jar target/vinculos-api-1.0.0.jar --spring.profiles.active=seed --seed.total-records=10000000   # carga menor
+make mongo-up                        # MongoDB local (replica set de 1 nó)
+make test                            # testes (a integração precisa de Docker)
+make run                             # API em http://localhost:8080 (Swagger em /swagger-ui.html)
+make seed RECORDS=10000000           # carga menor
+make verify                          # o mesmo que a CI
 ```
 
 Deploy da demonstração pública: `deploy/docker-compose.yml` na VPS (passo a passo no README, seção "Deploy na VPS"). O Caddy que publica a API pertence a outro projeto da VPS (`minha-paroquia`); depois de mudar o `Caddyfile` dele, reinicie o container do Caddy.

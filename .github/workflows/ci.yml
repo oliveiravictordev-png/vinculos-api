@@ -22,8 +22,11 @@ jobs:
           java-version: '25'
           cache: maven
 
-      - name: Testes, cobertura (JaCoCo) e relatório (Surefire)
-        run: mvn -B -ntp verify
+      - name: Makefile válido
+        run: make help
+
+      - name: Testes, cobertura (JaCoCo), portão de cobertura e relatório (Surefire)
+        run: make verify MVN="mvn -ntp"
 
       - name: Resumo da cobertura
         if: always()

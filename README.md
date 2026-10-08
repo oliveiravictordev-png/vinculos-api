@@ -140,18 +140,46 @@ Nenhuma requisição falha nem espera o tempo limite: a primeira consulta o banc
 
 ## Como rodar
 
-Pré-requisitos: **JDK 25**, **Maven 3.9+** e **Docker**.
+Pré-requisitos: **JDK 25**, **Maven 3.9+** e **Docker**. O `Makefile` reúne os comandos; `make` sozinho lista todos.
 
 ```bash
-# 1. MongoDB (replica set de 1 nó)
-docker compose up -d
-
-# 2. Testes (os de integração sobem um MongoDB via Testcontainers; sem Docker eles são ignorados)
-mvn test
-
-# 3. API
-mvn spring-boot:run
+make mongo-up     # MongoDB local (replica set de 1 nó) via Docker
+make test         # testes (a integração sobe um MongoDB via Testcontainers; sem Docker ela é pulada)
+make run          # API em http://localhost:8080
 ```
+
+| comando | o que faz |
+|---|---|
+| `make mongo-up` / `make mongo-down` | sobe/para o MongoDB local |
+| `make run` | sobe a API (Swagger em `/swagger-ui.html`) |
+| `make seed RECORDS=10000000` | carga de dados (padrão 10 milhões; `RECORDS=1000000000` para 1 bilhão) |
+| `make test` | testes unitários, web e integração |
+| `make verify` | o mesmo que a CI: testes + portão de cobertura |
+| `make coverage` | testes + caminhos dos relatórios |
+| `make bench API_URL=...` / `make bench-public` | benchmark local / contra a demonstração pública |
+| `make health API_URL=...` / `make swagger` | health check / endereços da documentação |
+| `make package` / `make docker-build` | jar / imagem Docker |
+| `make deploy-vps` / `make seed-vps` | na VPS: atualizar e subir / carregar 100 milhões |
+| `make clean` | remove `target/` |
+
+No Windows, os comandos `make` funcionam no WSL ou no Git Bash com `make` instalado. Sem `make`, use os comandos `mvn`/`docker` equivalentes, que estão no próprio `Makefile`.
+
+### Testes e cobertura
+
+O `mvn test` gera dois relatórios: a **cobertura** (JaCoCo) em `target/site/jacoco/index.html` e os **testes** (Surefire) em `target/reports/surefire.html`. A CI (GitHub Actions, `.github/workflows/ci.yml`) roda `make verify` a cada push, com Docker, então o teste de integração usa um MongoDB real. Ela publica os relatórios como artefato (`test-reports`) e mostra a cobertura por pacote no resumo da execução. O `verify` **falha** se a cobertura ficar abaixo de 85% das linhas ou 75% das ramificações.
+
+Resultado na CI (46 testes, 0 falhas):
+
+| pacote | linhas | ramificações |
+|---|---|---|
+| `application` | 100% | 100% |
+| `domain` | 98% | 87% |
+| `infrastructure.config` | 100% | 100% |
+| `infrastructure.mongo` | 91% | 50% |
+| `infrastructure.seed` | 83% | 73% |
+| `web` | 97% | 90% |
+| `web.dto` | 100% | 100% |
+| **total** | **92%** | **82%** |
 
 ### Carga de 1 bilhão de registros
 
@@ -190,7 +218,8 @@ Para manter a latência baixa, a RAM do MongoDB (WiredTiger cache) deve comporta
 Com a API rodando sobre a base carregada:
 
 ```bash
-mvn test -Dtest=ApiBenchmark -Dbench.url=http://localhost:8080
+make bench API_URL=http://localhost:8080
+# ou: mvn test -Dtest=ApiBenchmark -Dbench.url=http://localhost:8080
 ```
 
 Sorteia 2.000 chaves entre os clientes carregados e mede p50/p95/p99 dos dois endpoints, com e sem o cache da API, além da vazão do endpoint 1 com 64 requisições simultâneas. Opções: `-Dbench.first-customer` e `-Dbench.customers` (faixa de clientes carregados; padrão a partir de 0, com 200 milhões), `-Dbench.samples`, `-Dbench.concurrency` e `-Dbench.requests`. Sem `bench.url`, o teste é ignorado.
