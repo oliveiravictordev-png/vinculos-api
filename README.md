@@ -64,7 +64,7 @@ Convenção: nomes de arquivos, classes, métodos, testes, campos JSON e proprie
 
 ## Modelo de dados
 
-Coleção `vinculos`: um documento por registro (cliente × empresa × dado).
+Coleção `vinculos`: um documento por registro (cliente × empresa × dado). A coleção é **clusterizada por `_id`**: os documentos ficam gravados na ordem do próprio `_id`, sem um índice `_id` separado.
 
 | campo | significado | tipo |
 |---|---|---|
@@ -84,7 +84,8 @@ Coleção `vinculos`: um documento por registro (cliente × empresa × dado).
 ## Performance
 
 - **Nomes de campo curtos e `_id` long:** em 1 bilhão de documentos, cada byte por documento custa cerca de 1 GB. `_id` long (8 bytes) no lugar de ObjectId (12 bytes) economiza cerca de 4 GB.
-- **Compressão zstd** na coleção (WiredTiger).
+- **Coleção clusterizada por `_id`:** elimina o índice `_id` separado, que em 1 bilhão de registros ocuparia cerca de 32 GB, e reduz a escrita durante a carga.
+- **Compressão zstd** na coleção (WiredTiger). Em serviços gerenciados que proíbem essa opção, como o MongoDB Atlas, a coleção é criada com a compressão padrão do serviço (aviso em WARN no log).
 - **Driver MongoDB direto** (`MongoCollection<Document>` com projeção), sem mapeamento de entidades.
 - **Cache Caffeine** (`companies` e `records`) com `sync=true`: requisições simultâneas da mesma chave fazem uma única consulta ao banco. A chave do endpoint 2 é normalizada (CNPJs ordenados e sem duplicatas), o que aumenta o hit rate. É configurável via `CACHE_SPEC`, e as métricas ficam em `/actuator/caches` e `/actuator/metrics/cache.gets`.
 - **Virtual threads** no Tomcat para I/O bloqueante, com pool de 200 conexões no Mongo e espera máxima de 2 s por conexão.
@@ -137,6 +138,7 @@ Como os dados são gerados:
 - Os anos vão de 2024 a 2026, e cerca de 20% das chaves são CNPJ.
 - Os documentos são válidos.
 - O log da carga imprime 3 chaves de exemplo para testar os endpoints. Exemplo: `year=2024, CPF 01000000109`.
+- A chave do exemplo do enunciado (**2026 / CPF / 056.858.627-17**) é gerada pelo cliente 140.575.883, com 4 empresas. Ela existe em qualquer carga a partir de cerca de 703 milhões de registros.
 
 O índice secundário é criado **ao final** da carga, porque construí-lo uma vez é bem mais barato que mantê-lo a cada insert.
 
@@ -147,8 +149,17 @@ O índice secundário é criado **ao final** da carga, porque construí-lo uma v
 
 Para manter a latência baixa, a RAM do MongoDB (WiredTiger cache) deve comportar pelo menos o índice `ix_ano_tipo_documento_empresa`.
 
+### Benchmark
+
+Com a API rodando sobre a base carregada:
+
+```bash
+mvn test -Dtest=ApiBenchmark -Dbench.url=http://localhost:8080
+```
+
+Sorteia 2.000 chaves entre os clientes carregados e mede p50/p95/p99 dos dois endpoints, com e sem o cache da API, além da vazão do endpoint 1 com 64 requisições simultâneas. Opções: `-Dbench.customers` (clientes carregados, padrão 200 milhões), `-Dbench.samples`, `-Dbench.concurrency` e `-Dbench.requests`. Sem `bench.url`, o teste é ignorado.
+
 ## Próximos passos sugeridos
 
-- Teste de carga (k6/Gatling) com chaves aleatórias medindo p95/p99, com e sem cache.
 - Sharding por `{ a: 1, t: 1, v: 1 }` se o volume crescer além de um nó.
 - Endpoint `/actuator/prometheus` (micrometer-registry-prometheus) para observabilidade.

@@ -2,6 +2,7 @@ package com.teste.vinculos.infrastructure.mongo;
 
 import com.mongodb.MongoCommandException;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.ClusteredIndexOptions;
 import com.mongodb.client.model.CreateCollectionOptions;
 import com.mongodb.client.model.IndexOptions;
 import com.mongodb.client.model.Indexes;
@@ -16,7 +17,7 @@ import org.springframework.stereotype.Component;
 
 import static com.mongodb.client.model.Filters.eq;
 
-/** Cria a coleção (com validação de schema e compressão zstd) e o índice de consulta. */
+/** Cria a coleção (clusterizada por _id, com validação de schema e compressão zstd) e o índice de consulta. */
 @Component
 public class MongoSchema {
 
@@ -55,19 +56,36 @@ public class MongoSchema {
             return;
         }
         try {
-            db.createCollection(Fields.COLLECTION, new CreateCollectionOptions()
-                    .validationOptions(new ValidationOptions()
-                            .validator(VALIDATOR)
-                            .validationLevel(ValidationLevel.STRICT)
-                            .validationAction(ValidationAction.ERROR))
-                    .storageEngineOptions(new Document("wiredTiger",
-                            new Document("configString", "block_compressor=zstd"))));
-            log.info("Collection {} created (schema validation, zstd compression)", Fields.COLLECTION);
+            createCollection(true);
+            log.info("Collection {} created (clustered by _id, schema validation, zstd compression)", Fields.COLLECTION);
         } catch (MongoCommandException e) {
-            if (e.getErrorCode() != NAMESPACE_EXISTS) {
+            if (e.getErrorCode() == NAMESPACE_EXISTS) {
+                return;
+            }
+            // Serviços gerenciados (ex.: MongoDB Atlas) proíbem storageEngine e já aplicam compressão própria.
+            if (!e.getErrorMessage().contains("storageEngine")) {
                 throw e;
             }
+            log.warn("Server does not allow storageEngine options; creating {} with the default compression", Fields.COLLECTION);
+            createCollection(false);
+            log.info("Collection {} created (clustered by _id, schema validation)", Fields.COLLECTION);
         }
+    }
+
+    // Clusterizada: os documentos ficam ordenados pelo próprio _id, sem o índice _id separado
+    // (em 1 bilhão de registros, ~32 GB a menos em disco e menos escrita na carga).
+    private void createCollection(boolean zstd) {
+        var options = new CreateCollectionOptions()
+                .clusteredIndexOptions(new ClusteredIndexOptions(new Document(Fields.ID, 1), true))
+                .validationOptions(new ValidationOptions()
+                        .validator(VALIDATOR)
+                        .validationLevel(ValidationLevel.STRICT)
+                        .validationAction(ValidationAction.ERROR));
+        if (zstd) {
+            options.storageEngineOptions(new Document("wiredTiger",
+                    new Document("configString", "block_compressor=zstd")));
+        }
+        db.createCollection(Fields.COLLECTION, options);
     }
 
     /**
