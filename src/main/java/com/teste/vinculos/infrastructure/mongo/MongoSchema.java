@@ -9,11 +9,16 @@ import com.mongodb.client.model.Indexes;
 import com.mongodb.client.model.ValidationAction;
 import com.mongodb.client.model.ValidationLevel;
 import com.mongodb.client.model.ValidationOptions;
+import com.teste.vinculos.domain.CustomerKey;
+import com.teste.vinculos.domain.DocumentType;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.stereotype.Component;
+
+import java.util.Arrays;
+import java.util.List;
 
 import static com.mongodb.client.model.Filters.eq;
 
@@ -27,28 +32,38 @@ public class MongoSchema {
     private static final Logger log = LogManager.getLogger(MongoSchema.class);
     private static final int NAMESPACE_EXISTS = 48;
 
+    // Formato dos documentos já normalizados: CPF com 11 dígitos; CNPJ com 12 posições [0-9A-Z] + 2 dígitos verificadores.
+    private static final String CNPJ_PATTERN = "[0-9A-Z]{12}[0-9]{2}";
+    private static final String CPF_PATTERN = "[0-9]{11}";
+
     // O banco recusa qualquer documento fora do formato: garantia de integridade independente da aplicação.
-    private static final Document VALIDATOR = Document.parse("""
-            { "$jsonSchema": {
-                "bsonType": "object",
-                "required": ["_id", "a", "t", "v", "e", "p", "s", "u"],
-                "properties": {
-                  "_id": { "bsonType": "long" },
-                  "a":   { "bsonType": "int", "minimum": 1900, "maximum": 2100 },
-                  "t":   { "enum": ["CPF", "CNPJ"] },
-                  "v":   { "bsonType": "string", "pattern": "^([0-9]{11}|[0-9A-Z]{12}[0-9]{2})$" },
-                  "e":   { "bsonType": "string", "pattern": "^[0-9A-Z]{12}[0-9]{2}$" },
-                  "p":   { "bsonType": "string" },
-                  "s":   { "bsonType": "long" },
-                  "u":   { "bsonType": "date" }
-                }
-            } }
-            """);
+    // Montado a partir de Fields e do domínio, para não divergir dos nomes de campo e das regras da aplicação.
+    private static final Document VALIDATOR = new Document("$jsonSchema", new Document("bsonType", "object")
+            .append("required", List.of(Fields.ID, Fields.YEAR, Fields.TYPE, Fields.DOCUMENT,
+                    Fields.COMPANY, Fields.PRODUCT, Fields.AMOUNT_CENTS, Fields.UPDATED_AT))
+            .append("properties", new Document()
+                    .append(Fields.ID, type("long"))
+                    .append(Fields.YEAR, type("int").append("minimum", CustomerKey.MIN_YEAR).append("maximum", CustomerKey.MAX_YEAR))
+                    .append(Fields.TYPE, new Document("enum", Arrays.stream(DocumentType.values()).map(Enum::name).toList()))
+                    .append(Fields.DOCUMENT, type("string").append("pattern", "^(" + CPF_PATTERN + "|" + CNPJ_PATTERN + ")$"))
+                    .append(Fields.COMPANY, type("string").append("pattern", "^" + CNPJ_PATTERN + "$"))
+                    .append(Fields.PRODUCT, type("string"))
+                    .append(Fields.AMOUNT_CENTS, type("long"))
+                    .append(Fields.UPDATED_AT, type("date"))));
 
     private final MongoDatabase db;
 
     public MongoSchema(MongoTemplate mongo) {
         this.db = mongo.getDb();
+    }
+
+    /** Validador JSON Schema aplicado à coleção (exposto para os testes). */
+    static Document validator() {
+        return VALIDATOR;
+    }
+
+    private static Document type(String bsonType) {
+        return new Document("bsonType", bsonType);
     }
 
     public void ensureCollection() {

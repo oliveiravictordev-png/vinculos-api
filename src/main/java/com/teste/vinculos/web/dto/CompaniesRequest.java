@@ -1,17 +1,14 @@
 package com.teste.vinculos.web.dto;
 
-import com.teste.vinculos.domain.CustomerKey;
+import com.teste.vinculos.web.ApiDocs;
 import io.swagger.v3.oas.annotations.media.Schema;
 
+/** Request do endpoint 1: a chave do cliente. */
 public record CompaniesRequest(
-        @Schema(description = "Ano (1900 a 2100)", example = "2026")
+        @Schema(description = ApiDocs.YEAR, example = ApiDocs.YEAR_EXAMPLE)
         Integer year,
-        @Schema(description = "Tipo do documento", allowableValues = {"CPF", "CNPJ"}, example = "CPF")
+        @Schema(description = ApiDocs.DOCUMENT_TYPE, allowableValues = {"CPF", "CNPJ"}, example = ApiDocs.DOCUMENT_TYPE_EXAMPLE)
         String documentType,
-        @Schema(description = "CPF ou CNPJ, com ou sem pontuação (CNPJ alfanumérico aceito)", example = "056.858.627-17")
-        String document) {
-
-    public CustomerKey key() {
-        return CustomerKey.of(year, documentType, document);
-    }
+        @Schema(description = ApiDocs.DOCUMENT, example = ApiDocs.DOCUMENT_EXAMPLE)
+        String document) implements CustomerKeyRequest {
 }

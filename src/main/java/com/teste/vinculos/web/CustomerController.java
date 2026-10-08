@@ -21,7 +21,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/v1/customers")
 @Tag(name = "Customers", description = "Consultas por chave do cliente: ano + tipo do documento + documento")
-@ApiResponse(responseCode = "400", description = "Dado inválido (ano fora de 1900-2100, tipo desconhecido, dígito verificador errado)",
+@ApiResponse(responseCode = "400", description = ApiDocs.INVALID_DATA,
+        content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
+@ApiResponse(responseCode = "429", description = "Acima do rate limit; tente de novo após o Retry-After",
         content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
 @ApiResponse(responseCode = "503", description = "Banco indisponível ou consulta acima do tempo limite",
         content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
