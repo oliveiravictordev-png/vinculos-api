@@ -1,0 +1,93 @@
+### Login GFT e armazenamento automático do JWT
+POST {{baseUrl}}/api/v1/auth/token
+Content-Type: application/json
+
+{
+  "username": "{{gftUsername}}",
+  "password": "{{gftPassword}}"
+}
+
+> {%
+  client.global.set("accessToken", response.body.accessToken);
+%}
+
+### Login Bradesco e armazenamento automático do JWT
+POST {{baseUrl}}/api/v1/auth/token
+Content-Type: application/json
+
+{
+  "username": "{{bradescoUsername}}",
+  "password": "{{bradescoPassword}}"
+}
+
+> {%
+  client.global.set("accessToken", response.body.accessToken);
+%}
+
+### Empresas ligadas ao CPF
+POST {{baseUrl}}/api/v1/customers/companies
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "documentType": "CPF",
+  "document": "05685862717"
+}
+
+### O mesmo CPF com máscara
+POST {{baseUrl}}/api/v1/customers/companies
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "documentType": "CPF",
+  "document": "056.858.627-17"
+}
+
+### Todos os registros nas quatro empresas do exemplo
+POST {{baseUrl}}/api/v1/customers/records
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "documentType": "CPF",
+  "document": "05685862717",
+  "companies": [
+    "10007037000103",
+    "10014956000104",
+    "10022875000148",
+    "10049118000168"
+  ]
+}
+
+### Apenas uma empresa
+POST {{baseUrl}}/api/v1/customers/records
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "documentType": "CPF",
+  "document": "05685862717",
+  "companies": ["10007037000103"]
+}
+
+### Documento inválido: resposta esperada 400
+POST {{baseUrl}}/api/v1/customers/companies
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "documentType": "CPF",
+  "document": "123"
+}
+
+### Health check público
+GET {{baseUrl}}/actuator/health
+
+### OpenAPI público
+GET {{baseUrl}}/v3/api-docs

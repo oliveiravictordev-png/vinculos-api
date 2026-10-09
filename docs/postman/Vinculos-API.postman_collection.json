@@ -1,0 +1,131 @@
+{
+  "info": {
+    "name": "Vínculos API",
+    "description": "Exemplos completos da API. As requisições protegidas renovam o JWT automaticamente usando as variáveis adminUsername e adminPassword.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (!pm.request.url.toString().includes('/api/v1/auth/token')) {",
+          "  pm.sendRequest({",
+          "    url: pm.environment.get('baseUrl') + '/api/v1/auth/token',",
+          "    method: 'POST',",
+          "    header: { 'Content-Type': 'application/json' },",
+          "    body: { mode: 'raw', raw: JSON.stringify({",
+          "      username: pm.environment.get('adminUsername'),",
+          "      password: pm.environment.get('adminPassword')",
+          "    }) }",
+          "  }, (error, response) => {",
+          "    if (error || response.code !== 200) throw new Error('Falha ao obter JWT automaticamente');",
+          "    pm.environment.set('accessToken', response.json().accessToken);",
+          "  });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "Autenticação",
+      "item": [
+        {
+          "name": "Login GFT",
+          "auth": { "type": "noauth" },
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{gftUsername}}\",\n  \"password\": \"{{gftPassword}}\"\n}" },
+            "url": "{{baseUrl}}/api/v1/auth/token"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('JWT emitido', () => pm.expect(pm.response.code).to.eql(200));", "pm.environment.set('accessToken', pm.response.json().accessToken);"] } }]
+        },
+        {
+          "name": "Login Bradesco",
+          "auth": { "type": "noauth" },
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"username\": \"{{bradescoUsername}}\",\n  \"password\": \"{{bradescoPassword}}\"\n}" },
+            "url": "{{baseUrl}}/api/v1/auth/token"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('JWT emitido', () => pm.expect(pm.response.code).to.eql(200));", "pm.environment.set('accessToken', pm.response.json().accessToken);"] } }]
+        }
+      ]
+    },
+    {
+      "name": "Consultas",
+      "item": [
+        {
+          "name": "Empresas por CPF",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"year\": {{year}},\n  \"documentType\": \"CPF\",\n  \"document\": \"{{cpf}}\"\n}" },
+            "url": "{{baseUrl}}/api/v1/customers/companies"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Consulta aceita', () => pm.expect(pm.response.code).to.eql(200));", "pm.test('Retorna empresas', () => pm.expect(pm.response.json().companies).to.be.an('array'));"] } }]
+        },
+        {
+          "name": "Empresas por CPF formatado",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"year\": {{year}},\n  \"documentType\": \"CPF\",\n  \"document\": \"056.858.627-17\"\n}" },
+            "url": "{{baseUrl}}/api/v1/customers/companies"
+          }
+        },
+        {
+          "name": "Todos os registros nas quatro empresas",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"year\": {{year}},\n  \"documentType\": \"CPF\",\n  \"document\": \"{{cpf}}\",\n  \"companies\": [\n    \"10007037000103\",\n    \"10014956000104\",\n    \"10022875000148\",\n    \"10049118000168\"\n  ]\n}" },
+            "url": "{{baseUrl}}/api/v1/customers/records"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Consulta aceita', () => pm.expect(pm.response.code).to.eql(200));", "pm.test('Uma resposta por empresa', () => pm.expect(pm.response.json().companies).to.have.length(4));"] } }]
+        },
+        {
+          "name": "Registros em uma empresa",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"year\": {{year}},\n  \"documentType\": \"CPF\",\n  \"document\": \"{{cpf}}\",\n  \"companies\": [\"10007037000103\"]\n}" },
+            "url": "{{baseUrl}}/api/v1/customers/records"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Documentação e diagnóstico",
+      "auth": { "type": "noauth" },
+      "item": [
+        { "name": "Health", "request": { "method": "GET", "url": "{{baseUrl}}/actuator/health" } },
+        { "name": "OpenAPI JSON", "request": { "method": "GET", "url": "{{baseUrl}}/v3/api-docs" } },
+        { "name": "Swagger UI", "request": { "method": "GET", "url": "{{baseUrl}}/swagger-ui.html" } }
+      ]
+    },
+    {
+      "name": "Erros esperados",
+      "item": [
+        {
+          "name": "Documento inválido - retorna 400",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"year\": {{year}},\n  \"documentType\": \"CPF\",\n  \"document\": \"123\"\n}" },
+            "url": "{{baseUrl}}/api/v1/customers/companies"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["pm.test('Validação rejeita documento', () => pm.expect(pm.response.code).to.eql(400));"] } }]
+        }
+      ]
+    }
+  ]
+}

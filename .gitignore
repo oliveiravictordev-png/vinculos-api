@@ -6,3 +6,5 @@ target/
 
 # Credenciais locais (ex.: atlas-credentials.env)
 *.env
+*.private.env.json
+*-Local.postman_environment.json
