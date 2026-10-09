@@ -186,7 +186,7 @@ FROM logs*,-logstash*,filebeat-*
 | SORT last_seen DESC
 ```
 
-O formato dos alertas foi conferido com a API local; esta consulta ainda não foi executada contra os dados do Elastic (os alertas só aparecem lá quando um limite é ultrapassado em produção). Os alertas de fora da API (API fora do ar, MongoDB sem primário, replicação atrasada, disco) vêm do `deploy/monitor.sh`, no journal da VPS e no webhook.
+Consulta executada contra os dados reais em 2026-10-09: uma rajada de 300 respostas 401 na demonstração pública gerou um alerta em cada instância (`status=401 count=158` e `count=142`), que chegaram ao Elastic em menos de um minuto. Os alertas de fora da API (API fora do ar, MongoDB sem primário, replicação atrasada, disco) vêm do `deploy/monitor.sh`, no journal da VPS e no webhook.
 
 ## Gerar dados para os gráficos
 

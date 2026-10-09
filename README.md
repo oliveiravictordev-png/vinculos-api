@@ -520,7 +520,7 @@ Os alertas ficam em dois lugares, porque um monitor que roda dentro da API cai j
 | MongoDB sem primário | `monitor.sh` (pergunta a qualquer nó que responda) | nenhum membro `PRIMARY` |
 | replica set atrasado | `monitor.sh` | secundário mais de 30 s atrás do primário |
 | disco | `monitor.sh` | uso de `/` acima de 80% |
-| muitos 401, 429, 500 ou 503 | `OperationalMonitor` (dentro da API, por minuto e por instância) | 30, 50, 5 e 5 respostas por minuto |
+| muitos 401, 429, 500 ou 503 | `OperationalMonitor` (dentro da API, por minuto e por instância) | 30, 50, 5 e 5 respostas por minuto (testado em produção: 300 respostas 401 geraram um alerta em cada instância, visto no Elastic) |
 | consultas lentas | `OperationalMonitor` | 10 consultas ao MongoDB acima de 200 ms (`app.query.slow-ms`) por minuto |
 | queda brusca de acertos do cache | `OperationalMonitor` | taxa do minuto 30 pontos abaixo da média recente (com 100+ acessos) |
 
@@ -606,6 +606,8 @@ Sem a chave JWT e o segredo da auditoria, a API não sobe, e o deploy automátic
 2. só publica o commit novo **se a CI dele passou**;
 3. reconstrói a imagem e faz a troca **sem queda (rolling)**: sobe duas instâncias novas ao lado das antigas, espera as novas ficarem saudáveis e só então para as antigas, com desligamento gracioso que termina as requisições em andamento;
 4. se as novas não ficarem saudáveis em 2 minutos, remove-as, e as antigas seguem no ar sem nunca terem parado.
+
+Medido em produção durante um deploy, com uma requisição a cada 0,1 s pelo Caddy: **254 respostas 200 em 254** num endpoint da API. O `/actuator/health/readiness` respondeu 503 uma vez, no instante em que uma instância antiga entrou em desligamento gracioso. É o comportamento esperado do readiness: ele avisa que a instância vai sair, mas ela ainda termina o que recebeu.
 
 O histórico fica em `journalctl -u vinculos-deploy`, e os alertas do host em `journalctl -t vinculos-monitor`.
 
