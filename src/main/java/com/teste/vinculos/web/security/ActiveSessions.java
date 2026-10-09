@@ -52,6 +52,18 @@ public class ActiveSessions implements OAuth2TokenValidator<Jwt> {
         return active.get(sessionId + "|" + username, key -> store.isActive(sessionId, username));
     }
 
+    /**
+     * Consulta o banco sem cache. Usado no refresh: ele é raro (um a cada access token) e não pode renovar uma
+     * sessão revogada em outra instância nos 30 s em que o cache local ainda a veria ativa.
+     */
+    boolean isActiveNow(String sessionId, String username) {
+        boolean now = sessionId != null && username != null && store.isActive(sessionId, username);
+        if (!now && sessionId != null) {
+            active.invalidate(sessionId + "|" + username);
+        }
+        return now;
+    }
+
     void revoke(String sessionId, String username) {
         store.revoke(sessionId);
         active.invalidate(sessionId + "|" + username);

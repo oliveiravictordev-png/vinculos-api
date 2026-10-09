@@ -108,7 +108,7 @@ public class AuthController {
         Jwt refresh = tokens.decodeRefresh(requireCookie(request));
         String username = refresh.getSubject();
         String sessionId = refresh.getClaimAsString(TokenService.SESSION_ID);
-        if (!sessions.isActive(sessionId, username)) {
+        if (!sessions.isActiveNow(sessionId, username)) {
             throw new InvalidSessionException("Session is no longer active");
         }
         try {

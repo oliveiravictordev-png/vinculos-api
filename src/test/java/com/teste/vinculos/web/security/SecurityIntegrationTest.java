@@ -73,6 +73,12 @@ class SecurityIntegrationTest {
     @Autowired
     MockMvcTester mvc;
 
+    @Autowired
+    SessionStore store;
+
+    @Autowired
+    TokenService tokens;
+
     @MockitoBean
     FindCompaniesUseCase findCompanies;
 
@@ -188,6 +194,20 @@ class SecurityIntegrationTest {
         assertThat(mvc.get().uri("/api/v1/auth/session").cookie(access).exchange()).hasStatus(HttpStatus.UNAUTHORIZED);
         assertThat(mvc.post().uri("/api/v1/auth/refresh").cookie(refresh).exchange()).hasStatus(HttpStatus.UNAUTHORIZED);
         assertThat(mvc.post().uri("/api/v1/auth/logout").exchange()).hasStatus(HttpStatus.NO_CONTENT);
+    }
+
+    @Test
+    void refreshIgnoresTheLocalCacheSoARevocationOnAnotherInstanceCountsImmediately() {
+        MvcTestResult login = postJson("/api/v1/auth/session", ADMIN_1);
+        Cookie access = new Cookie(SessionCookies.ACCESS, cookie(login, SessionCookies.ACCESS));
+        Cookie refresh = new Cookie(SessionCookies.REFRESH, cookie(login, SessionCookies.REFRESH));
+        assertThat(mvc.get().uri("/api/v1/auth/session").cookie(access).exchange()).hasStatusOk(); // cache: ativa
+
+        String sessionId = tokens.decodeRefresh(refresh.getValue()).getClaimAsString(TokenService.SESSION_ID);
+        store.revoke(sessionId); // logout recebido por outra instância: o cache desta não fica sabendo
+
+        assertThat(mvc.post().uri("/api/v1/auth/refresh").cookie(refresh).exchange()).hasStatus(HttpStatus.UNAUTHORIZED);
+        assertThat(mvc.get().uri("/api/v1/auth/session").cookie(access).exchange()).hasStatus(HttpStatus.UNAUTHORIZED);
     }
 
     @Test
