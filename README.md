@@ -541,17 +541,19 @@ Os alertas ficam em dois lugares, porque um monitor que roda dentro da API cai j
 
 A CI (GitHub Actions) roda `make verify` a cada push, com Docker, então a integração usa um MongoDB real. Ela publica os relatórios (JaCoCo e Surefire) como artefato e **falha** se a cobertura cair abaixo de 85% das linhas ou 75% das ramificações. Localmente, `make test` gera `target/site/jacoco/index.html` e `target/reports/surefire.html`.
 
-Cobertura na CI: **92% das linhas e 82% das ramificações**, com os testes passando.
+Cobertura na CI: **94% das linhas e 84% das ramificações**, com os 118 testes passando.
 
 | pacote | linhas | ramificações |
 |---|---|---|
 | `application` | 100% | 100% |
-| `domain` | 98% | 87% |
+| `domain` | 99% | 91% |
 | `infrastructure.config` | 100% | 100% |
-| `infrastructure.mongo` | 91% | 50% |
+| `infrastructure.mongo` | 90% | 74% |
+| `infrastructure.monitoring` | 95% | 75% |
 | `infrastructure.seed` | 83% | 73% |
-| `web` | 97% | 90% |
+| `web` | 97% | 96% |
 | `web.dto` | 100% | 100% |
+| `web.security` | 97% | 81% |
 
 ## Como rodar
 
