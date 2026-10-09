@@ -8,7 +8,7 @@ JAR       := target/vinculos-api-1.0.0.jar
 PUBLIC_URL := https://vinculos.212-28-185-69.sslip.io
 
 .DEFAULT_GOAL := help
-.PHONY: help mongo-up mongo-down run test verify coverage package seed docker-build health swagger \
+.PHONY: help mongo-up mongo-down run test verify coverage package seed docker-build health swagger jwt-key \
         bench bench-public deploy-vps seed-vps clean
 
 help: ## Lista os comandos disponíveis
@@ -54,6 +54,13 @@ package: ## Gera o jar em target/ (sem rodar os testes)
 
 docker-build: ## Gera a imagem Docker da API (vinculos-api:latest)
 	docker build -t vinculos-api:latest .
+
+jwt-key: ## Gera uma chave RSA 2048 para JWT_PRIVATE_KEY (PKCS#8 em Base64, uma linha) e a pública correspondente
+	@openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null > .jwt-key.pem
+	@echo "JWT_PRIVATE_KEY=$$(grep -v -- ----- .jwt-key.pem | tr -d '\n')"
+	@echo "# pública (guarde para JWT_PREVIOUS_PUBLIC_KEY na próxima rotação):"
+	@echo "# $$(openssl pkey -in .jwt-key.pem -pubout 2>/dev/null | grep -v -- ----- | tr -d '\n')"
+	@rm -f .jwt-key.pem
 
 health: ## Health check da API em API_URL (liveness e readiness)
 	@curl -fsS $(API_URL)/actuator/health/liveness && echo

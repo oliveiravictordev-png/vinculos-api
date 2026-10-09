@@ -81,7 +81,10 @@ services:
       OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=vps-demo,service.version=1.0.0
       OTEL_METRIC_EXPORT_INTERVAL: "15000"
       OTEL_INSTRUMENTATION_MICROMETER_ENABLED: "true"   # métricas do Spring (cache.gets, pool do Mongo) também vão ao Elastic
+    # Duas instâncias: se uma cair (ou travar), o Caddy manda as requisições para a outra. Sem estado na instância:
+    # sessões e auditoria ficam no MongoDB; o cache Caffeine é por instância (dados só de leitura, sem invalidação).
     deploy:
+      replicas: 2
       resources:
         limits: { cpus: "2", memory: 1g }
     networks:

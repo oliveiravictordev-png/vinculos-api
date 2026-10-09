@@ -8,3 +8,9 @@ target/
 *.env
 *.private.env.json
 *-Local.postman_environment.json
+*-Local.postman_collection.json
+# Arquivos locais de ferramentas (logs de crash, workspace do Postman) e chave temporária do make jwt-key
+debug.log
+docs/postman/.postman/
+docs/postman/postman/
+.jwt-key.pem

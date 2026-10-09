@@ -27,9 +27,12 @@ echo "atualizando ${atual:0:7} -> ${novo:0:7}: $(git log -1 --format=%s origin/m
 cd deploy
 docker image inspect vinculos-api:latest >/dev/null 2>&1 && docker tag vinculos-api:latest vinculos-api:anterior
 
+# Todas as instâncias da API (deploy.replicas no compose) precisam ficar saudáveis.
 saudavel() {
   for _ in $(seq 1 24); do
-    [ "$(docker inspect -f '{{.State.Health.Status}}' vinculos-api-1 2>/dev/null)" = healthy ] && return 0
+    total=$(docker compose ps -q api | wc -l)
+    healthy=$(docker compose ps -q api | xargs -r docker inspect -f '{{.State.Health.Status}}' 2>/dev/null | grep -c '^healthy$' || true)
+    [ "$total" -ge 2 ] && [ "$healthy" -eq "$total" ] && return 0
     sleep 5
   done
   return 1

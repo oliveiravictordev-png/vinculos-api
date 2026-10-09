@@ -1,0 +1,10 @@
+[Unit]
+Description=Roda o monitor da vinculos-api a cada minuto
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Unit=vinculos-monitor.service
+
+[Install]
+WantedBy=timers.target
