@@ -11,9 +11,13 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.HttpMediaTypeException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -41,7 +45,8 @@ public class ApiExceptionHandler {
     }
 
     @ExceptionHandler({NoResourceFoundException.class, HttpRequestMethodNotSupportedException.class,
-            HttpMediaTypeException.class, HttpMessageNotReadableException.class})
+            HttpMediaTypeException.class, HttpMessageNotReadableException.class,
+            MethodArgumentTypeMismatchException.class, MissingServletRequestParameterException.class})
     ProblemDetail invalidRequest(Exception e) {
         log.debug("Invalid request: {}", e.getMessage());
         return problem(HttpStatus.BAD_REQUEST, INVALID_REQUEST, INVALID_REQUEST);
@@ -54,10 +59,19 @@ public class ApiExceptionHandler {
                 .body(problem(HttpStatus.TOO_MANY_REQUESTS, "Too many requests", e.getMessage()));
     }
 
+    // Senha errada e usuário inexistente dão a mesma mensagem (não revela quais usuários existem). Token ausente,
+    // vencido ou de sessão revogada dão outra, para o front saber que deve renovar a sessão.
     @ExceptionHandler(AuthenticationException.class)
     ProblemDetail unauthorized(AuthenticationException e) {
         log.debug("Authentication failed: {}", e.getClass().getSimpleName());
-        return problem(HttpStatus.UNAUTHORIZED, "Unauthorized", "Invalid username or password");
+        String detail = e instanceof BadCredentialsException ? "Invalid username or password" : "Authentication required";
+        return problem(HttpStatus.UNAUTHORIZED, "Unauthorized", detail);
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    ProblemDetail forbidden(AccessDeniedException e) {
+        log.debug("Access denied: {}", e.getMessage());
+        return problem(HttpStatus.FORBIDDEN, "Forbidden", "Access denied");
     }
 
     // Timeout ou indisponibilidade do banco: falha explícita em vez de resposta parcial.

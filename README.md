@@ -76,33 +76,36 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph web["web (HTTP)"]
-        F1["SecurityHeadersFilter<br/>RateLimitFilter"] --> CT["CustomerController<br/>DTOs (records)"]
+        F1["SecurityHeadersFilter · RequestIdFilter<br/>Spring Security (JWT RS256, cookies)<br/>RateLimitFilter"] --> CT["Customer / Export / Audit<br/>controllers · DTOs (records)"]
         CT --> EH["ApiExceptionHandler<br/>erros RFC 9457"]
     end
     subgraph application["application (casos de uso, sem Spring)"]
-        UC1["FindCompaniesUseCase"]
-        UC2["FindRecordsByCompanyUseCase"]
+        UC1["FindCompaniesUseCase<br/>FindRecordsByCompanyUseCase"]
+        UC2["SearchRecordsUseCase<br/>(cursor, totais, exportação)"]
+        UC3["AuditQueriesUseCase"]
     end
     subgraph domain["domain (regras puras)"]
-        K["CustomerKey<br/>Documents (CPF/CNPJ)"]
-        P{{"CustomerGateway<br/>(porta)"}}
+        K["CustomerKey · Documents<br/>RecordFilter · RecordCursor"]
+        P{{"portas: CustomerGateway<br/>RecordSearchGateway<br/>QueryAuditLog · SessionStore"}}
     end
     subgraph infrastructure["infrastructure (adapters)"]
         MG["MongoCustomerGateway<br/>cache Caffeine + driver"]
+        MA["MongoQueryAuditLog<br/>MongoSessionStore"]
         SC["MongoSchema<br/>coleção + índice"]
         SD["DataGenerator / DataLoader<br/>carga de 1 bilhão"]
+        OM["OperationalMonitor<br/>alertas"]
     end
-    CT --> UC1 & UC2
-    UC1 & UC2 --> K
-    UC1 & UC2 --> P
-    MG -. implementa .-> P
+    CT --> UC1 & UC2 & UC3
+    UC1 & UC2 & UC3 --> K
+    UC1 & UC2 & UC3 --> P
+    MG & MA -. implementam .-> P
 ```
 
 A arquitetura é clean/hexagonal, e **as dependências só apontam para dentro**:
 - **`domain`:** as regras de negócio, em Java puro. A `CustomerKey` só existe em estado válido: ela normaliza o documento e confere os dígitos verificadores, inclusive do CNPJ alfanumérico de 2026. O `CustomerGateway` é a porta de saída para o banco.
-- **`application`:** os dois casos de uso, sem dependência do Spring. Os beans são registrados em `infrastructure/config`.
-- **`infrastructure`:** os adapters. O gateway do MongoDB usa o driver direto com cache; há também o schema, o índice e a carga em massa.
-- **`web`:** o controller e os DTOs (`record`s), o tratamento único de erros, o rate limit, os cabeçalhos de segurança e o OpenAPI.
+- **`application`:** os casos de uso (os dois endpoints do enunciado, a busca paginada e a auditoria), sem dependência do Spring. Os beans são registrados em `infrastructure/config`.
+- **`infrastructure`:** os adapters. O gateway do MongoDB usa o driver direto com cache. Também ficam aqui a auditoria e as sessões, o schema, o índice, a carga em massa e o monitor de alertas.
+- **`web`:** os controllers e os DTOs (`record`s), a segurança, o tratamento único de erros, o rate limit, os cabeçalhos de segurança e o OpenAPI.
 
 Trocar o banco significaria escrever outro adapter para a mesma porta, sem tocar nos casos de uso. As convenções de código estão no [`CLAUDE.md`](CLAUDE.md).
 
@@ -139,22 +142,35 @@ Erros seguem o mesmo caminho e saem sempre pelo `ApiExceptionHandler`: 400, 429,
 
 ## Endpoints
 
-### Autenticação JWT
+### Autenticação
 
-Defina os segredos antes de iniciar a API. `JWT_SECRET` deve ter pelo menos 32 bytes e nunca deve ser commitido:
+Defina os segredos antes de iniciar a API (nunca os commite):
 
 ```bash
 export AUTH_ADMIN1_USERNAME=gft-admin
 export AUTH_ADMIN1_PASSWORD='uma-senha-forte-1'
 export AUTH_ADMIN2_USERNAME=bradesco-admin
 export AUTH_ADMIN2_PASSWORD='uma-senha-forte-2'
-export JWT_SECRET='um-segredo-aleatorio-com-pelo-menos-32-bytes'
+export JWT_PRIVATE_KEY=...        # make jwt-key (chave RSA 2048, PKCS#8 em Base64)
+export AUDIT_HASH_SECRET=...      # openssl rand -hex 32
 ```
 
-As duas contas administrativas são criadas em memória na inicialização. Não existe endpoint de cadastro, e nenhuma senha é gravada no MongoDB ou no repositório.
+As duas contas administrativas são criadas em memória na inicialização. Não existe endpoint de cadastro, e nenhuma senha é gravada no MongoDB ou no repositório. No PowerShell, use `$env:NOME=...`.
 
-No PowerShell, defina as quatro variáveis `AUTH_ADMIN*` e `JWT_SECRET` com `$env:NOME=...`.
-O login devolve um token HS256 com uma hora de validade por padrão (`JWT_TTL=PT1H`):
+**Tokens:**
+- **Assinatura RS256 (chave assimétrica):** só a API tem a chave privada. A pública fica em `GET /api/v1/auth/jwks`, e outro serviço pode validar os tokens sem conseguir emiti-los.
+- **Rotação sem derrubar sessões:** o `kid` de cada token é o thumbprint da chave. Na troca, a chave antiga vira `JWT_PREVIOUS_PUBLIC_KEY` e os tokens assinados com ela valem até vencer.
+- **Escopos:** `customers:read` (consultas), `customers:export` (exportação) e `audit:read` (histórico). Hoje os dois administradores têm os três.
+- **Revogação:** toda sessão fica na coleção `auth_sessions`, compartilhada pelas instâncias. O logout vale na hora na instância que o recebeu e em até 30 s nas outras (cache local da verificação).
+
+**Dois jeitos de autenticar:**
+
+| para | endpoint | onde fica o token |
+|---|---|---|
+| Postman, integrações | `POST /api/v1/auth/token` | no corpo (`accessToken`), válido por `JWT_TTL` (15 min) |
+| navegador (o front) | `POST /api/v1/auth/session`, `/refresh`, `/logout`, `GET /session` | só em cookies `HttpOnly`, `Secure`, `SameSite=Strict`; nunca no corpo |
+
+No navegador, o JavaScript da página nunca vê o token, então um XSS não consegue roubá-lo. O access token (15 min) vai no cookie `__Host-vinculos_access`. O refresh token vai no `__Secure-vinculos_refresh`, que só é enviado a `/api/v1/auth` e renova a sessão até `JWT_REFRESH_TTL` (12 h). `SameSite=Strict` protege contra CSRF. Como o front chama `/api` pelo próprio domínio (rewrite da Vercel), os cookies são da mesma origem.
 
 ```http
 POST /api/v1/auth/token
@@ -169,7 +185,9 @@ Envie o valor de `accessToken` nas consultas protegidas:
 Authorization: Bearer <accessToken>
 ```
 
-No Swagger, execute primeiro **Authentication / token**, copie `accessToken`, clique em **Authorize** e cole somente o token. Swagger, OpenAPI e health checks permanecem públicos; os demais endpoints exigem autenticação. Credenciais inválidas, token ausente, expirado, com assinatura ou emissor incorretos retornam `401`.
+No Swagger, execute primeiro **Authentication / token**, copie `accessToken`, clique em **Authorize** e cole só o token. Swagger, OpenAPI, JWKS e health checks são públicos; os demais endpoints exigem autenticação.
+
+Toda resposta traz o cabeçalho `X-Request-Id`. Ele é o mesmo dos logs e da auditoria, então um erro reportado leva direto à linha de log.
 
 A chave do cliente é **ano + tipo do documento + valor do documento**. Os endpoints usam `POST` com corpo JSON, para que o CPF/CNPJ nunca apareça na URL (logs de acesso, proxies).
 
@@ -204,6 +222,56 @@ Esta é a resposta real da API pública para a chave do enunciado. Uma empresa t
 - A resposta traz uma entrada por empresa solicitada, ordenada por CNPJ. Empresa sem vínculo vem com `records: []`, sem ser omitida.
 - O limite é de 100 empresas por requisição. Duplicatas e pontuação são normalizadas.
 
+### 3. Busca paginada, com filtros e totais
+
+Para quando uma empresa tem muitos registros ou o usuário quer filtrar. Todos os filtros são opcionais, exceto a chave:
+
+```http
+POST /api/v1/customers/search
+{ "year": 2026, "documentType": "CPF", "document": "056.858.627-17",
+  "companies": ["10049118000168"], "product": "invest",
+  "updatedFrom": "2026-01-01T00:00:00Z", "updatedTo": "2026-12-31T23:59:59Z",
+  "limit": 50, "cursor": null }
+```
+```json
+{ "items": [ { "id": 702879415, "company": "10049118000168", "product": "INVESTIMENTO",
+               "amount": 49108.59, "updatedAt": "2026-03-11T01:28:26.964Z" } ],
+  "nextCursor": null,
+  "totals": { "records": 1, "companies": 1, "amount": 49108.59 } }
+```
+
+- **Paginação por cursor** (não por `skip`): a página seguinte começa depois do último item, na ordem (empresa, id). Ela não repete nem pula itens e não fica mais lenta a cada página. Para seguir, repita o corpo com `cursor = nextCursor`; na última página ele vem `null`.
+- **`limit`** de 1 a 200 (padrão 50). **`product`** busca um trecho do nome, sem diferenciar maiúsculas (tratado como texto literal, nunca como expressão regular). **`companies`** vazio significa todas as empresas do cliente.
+- **`totals`** somam todos os registros do filtro, não só a página: quantidade, empresas distintas e valor.
+- **Índice:** a chave do cliente vem primeiro no filtro, então a consulta usa o índice `{a, t, v, e}` e lê só os registros daquele cliente. O teste de integração confere isso com `explain`.
+
+### 4. Exportação em CSV ou Excel
+
+```http
+POST /api/v1/customers/export?format=csv     (ou format=xlsx)
+{ mesmo corpo da busca; limit e cursor são ignorados }
+```
+
+O download é **protegido, limitado e auditado**:
+- exige o escopo `customers:export`;
+- tem rate limit próprio, de 3 exportações em rajada e 6 por minuto por IP;
+- traz no máximo 5.000 linhas, e o cabeçalho `X-Export-Truncated: true` avisa quando o arquivo foi cortado;
+- cada download fica na auditoria.
+
+O CSV segue a RFC 4180, em UTF-8 com BOM, e neutraliza fórmulas (CSV injection). O Excel é gerado em streaming, com valor e data como número e data de verdade.
+
+### 5. Histórico de consultas (auditoria)
+
+```http
+GET /api/v1/audit/history?limit=20
+```
+
+Devolve as últimas consultas **do próprio usuário**: ação, horário, chave com o documento mascarado, resultado (`SUCCESS`, `REJECTED` ou `FAILED`), quantidade de registros e duração. Toda consulta com chave válida é auditada, inclusive as que falham. O registro na coleção `query_audit` guarda:
+- o usuário e o `X-Request-Id`;
+- o documento **mascarado** e um **HMAC-SHA256** dele, com a chave `AUDIT_HASH_SECRET`. Um SHA-256 simples de CPF se reverte por força bruta (são só 10⁹ CPFs). O HMAC permite achar todas as consultas a um titular sem guardar o documento.
+
+Os registros expiram em 90 dias (`AUDIT_RETENTION`, índice TTL). A gravação é assíncrona e não atrasa a consulta.
+
 **Swagger:** `/swagger-ui.html`, com a especificação em `/v3/api-docs` e os exemplos já preenchidos com a chave do enunciado.
 
 **Health check:** `/actuator/health`, com `/liveness` e `/readiness`. O readiness só fica `UP` com o MongoDB respondendo, e o `HEALTHCHECK` do Docker usa esse endereço.
@@ -213,8 +281,9 @@ Esta é a resposta real da API pública para a chave do enunciado. Uma empresa t
 | status | quando |
 |---|---|
 | 400 | dado inválido (ano fora de 1900–2100, tipo desconhecido, dígito verificador errado, documento com mais de 18 caracteres) ou requisição malformada (rota inexistente, método errado, JSON quebrado), esta com a mensagem genérica `Invalid request` |
+| 401 | credenciais inválidas, ou token ausente, expirado, adulterado ou de sessão revogada |
+| 403 | token válido, mas sem o escopo do endpoint |
 | 429 | acima do rate limit, com `Retry-After` |
-| 401 | credenciais inválidas ou JWT ausente, expirado ou inválido |
 | 500 | erro inesperado, sem nenhum detalhe interno |
 | 503 | timeout ou indisponibilidade do banco |
 
@@ -370,6 +439,22 @@ Na VPS, o MongoDB roda como **replica set de 3 nós** (`deploy/docker-compose.ym
 
 No teste da VPS, cada requisição usou um CPF diferente para nunca cair no cache, ou seja, todas consultaram o MongoDB de verdade. O nó religado voltou, se atualizou e retomou o primário sozinho, por ter prioridade.
 
+**Duas instâncias da API:** o compose sobe a API com `replicas: 2`. As duas entram na rede do Caddy com o mesmo nome (`vinculos-api`), e o DNS do Docker devolve os dois IPs. Se uma instância cai, o Docker a tira do DNS e a outra continua atendendo. A instância não guarda estado: sessões e auditoria ficam no MongoDB.
+- **Cache por instância:** cada uma tem o seu Caffeine. Como os dados só são lidos, não há invalidação a coordenar.
+- **Rate limit por instância:** o limite efetivo por IP pode chegar ao dobro do configurado. Ver [próximos passos](#próximos-passos).
+- **Deploy:** o deploy automático exige as duas saudáveis antes de dar a versão como publicada.
+
+Para balanceamento com verificação de saúde no próprio Caddy (em vez de depender do DNS), o bloco no `Caddyfile` fica assim:
+
+```caddy
+reverse_proxy {
+    dynamic a vinculos-api 8080
+    lb_policy round_robin
+    lb_retries 2
+    fail_duration 30s
+}
+```
+
 ## Desempenho e cache
 
 - **Driver MongoDB direto** (`MongoCollection<Document>` com projeção), sem mapeamento de entidades.
@@ -388,7 +473,7 @@ No teste da VPS, cada requisição usou um CPF diferente para nunca cair no cach
 | sobrevive a deploy | não | sim |
 | custo operacional | nenhum | mais um serviço e mais RAM |
 
-Hoje há **uma única instância** da API, e os dados não mudam depois da carga, então não há invalidação de cache a coordenar. O cache só acelera consultas **repetidas**: entre 200 milhões de clientes, uma chave nova quase nunca está em cache, e quem segura a latência nesse caso é o índice. **Quando trocar:** com várias instâncias atrás de um balanceador, o caminho é cache em dois níveis, com o Caffeine como L1 e o Redis como L2 compartilhado.
+Hoje há **duas instâncias** da API, e os dados não mudam depois da carga, então não há invalidação de cache a coordenar: cada instância mantém o seu Caffeine. O cache só acelera consultas **repetidas**. Entre 200 milhões de clientes, uma chave nova quase nunca está em cache, e quem segura a latência nesse caso é o índice. **Quando trocar:** se a taxa de acerto cair por causa da divisão entre instâncias (o monitor avisa queda brusca), o caminho é cache em dois níveis, com o Caffeine como L1 e o Redis como L2 compartilhado.
 
 ## Confiança nos dados e segurança
 
@@ -406,6 +491,12 @@ Hoje há **uma única instância** da API, e os dados não mudam depois da carga
 - **Rate limit** em `/api`:
   - até 20 req/s por IP (rajada de 40) e 300 req/s na instância;
   - o IP considerado é o visto pelo proxy, então um `X-Forwarded-For` enviado pelo cliente não burla o limite.
+- **Autenticação e sessão** ([detalhes](#autenticação)):
+  - JWT RS256 com rotação de chave por `kid`;
+  - escopos por grupo de endpoints;
+  - sessão do navegador só em cookies `HttpOnly` + `SameSite=Strict`;
+  - refresh e revogação compartilhados entre as instâncias.
+- **Auditoria** de toda consulta a dados de cliente, com documento mascarado + HMAC e expiração em 90 dias ([detalhes](#5-histórico-de-consultas-auditoria)).
 - **Dependências vigiadas:** o Dependabot abre PRs semanais (Maven, Docker e actions) e emite alertas de vulnerabilidade.
 - **Segredos fora do Git:** ficam em arquivos `*.env` ignorados. O exemplo sem segredo está em `deploy/.env.example`.
 
@@ -418,13 +509,33 @@ A imagem traz o agente OpenTelemetry da Elastic (EDOT Java), ligado só quando `
 
 O serviço aparece como `vinculos-api`, no ambiente `vps-demo`. As consultas ES|QL para os dashboards (latência por endpoint, status HTTP, 429, consultas lentas, acerto do cache, heap) estão em [`docs/observabilidade-esql.md`](docs/observabilidade-esql.md), todas testadas contra os dados reais.
 
+### Alertas
+
+Os alertas ficam em dois lugares, porque um monitor que roda dentro da API cai junto com ela:
+
+| alerta | quem detecta | limite |
+|---|---|---|
+| API fora do ar | `deploy/monitor.sh` (host, a cada minuto) | health público pelo Caddy diferente de `UP` |
+| instância da API caída | `monitor.sh` | menos de 2 instâncias saudáveis |
+| MongoDB sem primário | `monitor.sh` (pergunta a qualquer nó que responda) | nenhum membro `PRIMARY` |
+| replica set atrasado | `monitor.sh` | secundário mais de 30 s atrás do primário |
+| disco | `monitor.sh` | uso de `/` acima de 80% |
+| muitos 401, 429, 500 ou 503 | `OperationalMonitor` (dentro da API, por minuto e por instância) | 30, 50, 5 e 5 respostas por minuto |
+| consultas lentas | `OperationalMonitor` | 10 requisições acima de 200 ms por minuto (SLO do Micrometer) |
+| queda brusca de acertos do cache | `OperationalMonitor` | taxa do minuto 30 pontos abaixo da média recente (com 100+ acessos) |
+
+- **Comparação por janela:** o monitor da API compara cada minuto com o anterior, porque os contadores do Micrometer são acumulados desde a subida. Os limites ficam em `app.monitor` no `application.yml`.
+- **Saída dos alertas:**
+  - os do host vão ao journal (`journalctl -t vinculos-monitor`) e, se `ALERT_WEBHOOK_URL` estiver no `deploy/.env`, a um webhook (Slack, Discord, ntfy). O webhook só recebe mensagem quando o conjunto de alertas muda.
+  - os da API saem no log em ERROR com o prefixo `ALERT` e chegam ao Elastic pelo agente. No Kibana, uma regra *Elasticsearch query* (ES|QL, a cada minuto) sobre `FROM logs*,-logstash*,filebeat-* | WHERE service.name == "vinculos-api" AND message LIKE "ALERT *"` vira notificação (consulta 15 de [`docs/observabilidade-esql.md`](docs/observabilidade-esql.md)).
+
 ## Testes automatizados e cobertura
 
 | nível | exemplos | ferramenta |
 |---|---|---|
-| unidade | domínio, casos de uso, rate limit, validador do MongoDB | JUnit 5 + AssertJ, com fakes |
-| web / contrato HTTP | formato e status dos erros, cabeçalhos de segurança | `@WebMvcTest` + `MockMvcTester` |
-| integração | os dois endpoints sobre um MongoDB real, recarga idempotente | `@SpringBootTest` + Testcontainers |
+| unidade | domínio (filtro, cursor), casos de uso (busca, auditoria), rate limit, chaves JWT, monitor de alertas, validador do MongoDB | JUnit 5 + AssertJ, com fakes |
+| web / contrato HTTP | formato e status dos erros, segurança (Bearer, cookies, refresh, logout, escopos, JWKS), exportação, cabeçalhos | `@WebMvcTest` + `MockMvcTester` |
+| integração | endpoints sobre um MongoDB real, busca paginada com `explain` do índice, auditoria, sessões, recarga idempotente | `@SpringBootTest` + Testcontainers |
 | falha | queda do primário de um replica set de 3 nós sob carga | `ReplicaSetFailoverTest` (Testcontainers, Linux/CI) |
 | carga / desempenho | latência e vazão | `ApiBenchmark` (opt-in) |
 
@@ -456,6 +567,7 @@ make run          # API em http://localhost:8080 (Swagger em /swagger-ui.html)
 |---|---|
 | `make mongo-up` / `make mongo-down` | sobe/para o MongoDB local |
 | `make run` | sobe a API |
+| `make jwt-key` | gera a chave RSA para `JWT_PRIVATE_KEY` |
 | `make seed RECORDS=10000000` | carga de dados (padrão 10 milhões) |
 | `make test` / `make verify` | testes / o mesmo que a CI, com o portão de cobertura |
 | `make coverage` | testes + caminhos dos relatórios |
@@ -475,22 +587,38 @@ No Windows, o `make` funciona pelo WSL ou pelo Git Bash. Os comandos `mvn`/`dock
 git clone https://github.com/oliveiravictordev-png/vinculos-api.git /opt/vinculos && cd /opt/vinculos
 make seed-vps                     # replica set de 3 nós + carga de 100 milhões (antes da API, para o índice ser criado uma vez só)
 make deploy-vps                   # sobe a API
-cp deploy/systemd/* /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now vinculos-deploy.timer
+cp deploy/systemd/* /etc/systemd/system/ && systemctl daemon-reload
+systemctl enable --now vinculos-deploy.timer vinculos-monitor.timer
 ```
+
+**Segredos (`deploy/.env`, fora do Git):** copie `deploy/.env.example` e preencha:
+- usuários e senhas;
+- `JWT_PRIVATE_KEY` (`make jwt-key`);
+- `AUDIT_HASH_SECRET` (`openssl rand -hex 32`);
+- opcionalmente, o endpoint OTLP do Elastic e o `ALERT_WEBHOOK_URL`.
+
+Sem a chave JWT e o segredo da auditoria, a API não sobe, e o deploy automático volta para a versão anterior.
 
 **Deploy automático** (`deploy/auto-deploy.sh`, a cada 2 minutos):
 1. busca a `main`;
 2. só publica o commit novo **se a CI dele passou**;
-3. reconstrói e troca o container da API;
-4. se a API nova não ficar saudável em 2 minutos, **volta sozinha** para a imagem anterior.
+3. reconstrói a imagem e troca as duas instâncias da API;
+4. se elas não ficarem saudáveis em 2 minutos, **volta sozinho** para a imagem anterior.
 
-O histórico fica em `journalctl -u vinculos-deploy`.
+O histórico fica em `journalctl -u vinculos-deploy`, e os alertas do host em `journalctl -t vinculos-monitor`.
 
-**Observabilidade:** para ligar o envio ao Elastic, copie `deploy/.env.example` para `deploy/.env` na VPS e preencha o endpoint OTLP e a chave.
+**Rotação da chave JWT:**
+1. gere uma nova com `make jwt-key`;
+2. no `.env`, mova a chave pública atual para `JWT_PREVIOUS_PUBLIC_KEY` e ponha a nova em `JWT_PRIVATE_KEY`;
+3. reinicie a API. As sessões abertas continuam válidas até vencer;
+4. depois de `JWT_REFRESH_TTL`, apague `JWT_PREVIOUS_PUBLIC_KEY`.
 
 ## Próximos passos
 
 - **Sharding** por `{ a: 1, t: 1, v: 1 }`, se o volume crescer além de um nó.
-- **Redis como cache L2 compartilhado**, mantendo o Caffeine como L1, quando houver mais de uma instância da API.
-- **Autenticação** (API key ou OAuth2), se a API deixar de ser uma demonstração pública.
+- **Redis** como cache L2 compartilhado (com o Caffeine como L1) e para um rate limit exato entre as instâncias, quando o tráfego justificar.
+- **Login corporativo (OIDC):** Keycloak ou Entra ID no lugar dos dois usuários em memória, com MFA e perfis de acesso. A API já valida JWT RS256 por `kid`, então passaria a confiar no JWKS do provedor.
+- **Proteção do login:** bloqueio temporário e atraso progressivo por usuário após tentativas erradas.
+- **Backup do MongoDB:** diário, criptografado, fora da VPS e com teste de restauração. O replica set protege da queda de um nó, não de um dado apagado.
+- **Imagem imutável:** a CI publica a imagem num registry e a VPS só a baixa, com rollback por tag, scan de vulnerabilidades e SBOM.
 - **Domínio próprio com Cloudflare** na frente da API, para proteção contra DDoS e para esconder o IP da VPS.

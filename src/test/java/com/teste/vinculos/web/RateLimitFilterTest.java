@@ -26,7 +26,7 @@ class RateLimitFilterTest {
         return new ModelAndView();
     };
     private final RateLimitFilter filter = new RateLimitFilter(
-            new RateLimitProperties(true, 3, 1, 100, 100), resolver, clock::get);
+            new RateLimitProperties(true, 3, 1, 100, 100, 2, 6), resolver, clock::get);
 
     @Test
     void allowsBurstThenDelegatesRejectionToTheExceptionHandler() throws Exception {
@@ -62,11 +62,23 @@ class RateLimitFilterTest {
 
     @Test
     void appliesGlobalLimitAcrossIps() throws Exception {
-        var tight = new RateLimitFilter(new RateLimitProperties(true, 10, 10, 2, 1), resolver, clock::get);
+        var tight = new RateLimitFilter(new RateLimitProperties(true, 10, 10, 2, 1, 2, 6), resolver, clock::get);
 
         assertThat(call(tight, "10.0.0.1", "/api/v1/customers/companies").getStatus()).isEqualTo(200);
         assertThat(call(tight, "10.0.0.2", "/api/v1/customers/companies").getStatus()).isEqualTo(200);
         assertThat(call(tight, "10.0.0.3", "/api/v1/customers/companies").getStatus()).isEqualTo(429);
+    }
+
+    @Test
+    void exportHasItsOwnTighterLimitPerIp() throws Exception {
+        assertThat(call("10.0.0.1", RateLimitFilter.EXPORT_PATH).getStatus()).isEqualTo(200);
+        assertThat(call("10.0.0.1", RateLimitFilter.EXPORT_PATH).getStatus()).isEqualTo(200);
+        assertThat(call("10.0.0.1", RateLimitFilter.EXPORT_PATH).getStatus()).isEqualTo(429);
+        assertThat(resolved).singleElement()
+                .isInstanceOfSatisfying(RateLimitExceededException.class, e -> assertThat(e.retryAfterSeconds()).isEqualTo(10));
+
+        assertThat(call("10.0.0.1", "/api/v1/customers/companies").getStatus()).isEqualTo(200);
+        assertThat(call("10.0.0.2", RateLimitFilter.EXPORT_PATH).getStatus()).isEqualTo(200);
     }
 
     @Test

@@ -75,6 +75,55 @@ Content-Type: application/json
   "companies": ["10007037000103"]
 }
 
+### Busca paginada com filtros (repita com "cursor" = nextCursor para a próxima página)
+POST {{baseUrl}}/api/v1/customers/search
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "documentType": "CPF",
+  "document": "05685862717",
+  "product": "invest",
+  "updatedFrom": "2026-01-01T00:00:00Z",
+  "limit": 2
+}
+
+> {%
+  client.global.set("nextCursor", response.body.nextCursor);
+%}
+
+### Próxima página
+POST {{baseUrl}}/api/v1/customers/search
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "documentType": "CPF",
+  "document": "05685862717",
+  "limit": 2,
+  "cursor": "{{nextCursor}}"
+}
+
+### Exportação em CSV (format=xlsx para Excel)
+POST {{baseUrl}}/api/v1/customers/export?format=csv
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "year": 2026,
+  "documentType": "CPF",
+  "document": "05685862717"
+}
+
+### Histórico das minhas consultas
+GET {{baseUrl}}/api/v1/audit/history?limit=10
+Authorization: Bearer {{accessToken}}
+
+### Chaves públicas dos tokens (JWKS)
+GET {{baseUrl}}/api/v1/auth/jwks
+
 ### Documento inválido: resposta esperada 400
 POST {{baseUrl}}/api/v1/customers/companies
 Authorization: Bearer {{accessToken}}

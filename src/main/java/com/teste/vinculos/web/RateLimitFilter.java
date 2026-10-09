@@ -10,6 +10,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.servlet.HandlerExceptionResolver;
@@ -19,12 +20,14 @@ import java.time.Duration;
 import java.util.function.LongSupplier;
 
 /**
- * Rate limit em /api: um balde de fichas por IP (barra quem martela a API) e um global (protege a instância).
+ * Rate limit em /api: um balde de fichas por IP (barra quem martela a API) e um global (protege a instância). A
+ * exportação consome também de um balde próprio por IP, bem menor.
  * O IP é o do cliente visto pelo proxy reverso (server.forward-headers-strategy), não o X-Forwarded-For enviado
  * pelo próprio cliente, que seria falsificável. Acima do limite, a resposta 429 é montada pelo
  * {@link ApiExceptionHandler}, no mesmo formato dos demais erros.
  */
 @Component
+@Profile("!seed")
 public class RateLimitFilter extends OncePerRequestFilter {
 
     private static final Logger log = LogManager.getLogger(RateLimitFilter.class);
@@ -33,7 +36,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private final HandlerExceptionResolver exceptionResolver;
     private final LongSupplier clock;
     private final TokenBucket global;
+    static final String EXPORT_PATH = "/api/v1/customers/export";
+
     private final Cache<String, TokenBucket> perIp = Caffeine.newBuilder()
+            .maximumSize(100_000)
+            .expireAfterAccess(Duration.ofMinutes(10))
+            .build();
+    private final Cache<String, TokenBucket> exportPerIp = Caffeine.newBuilder()
             .maximumSize(100_000)
             .expireAfterAccess(Duration.ofMinutes(10))
             .build();
@@ -61,8 +70,15 @@ public class RateLimitFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         long now = clock.getAsLong();
         String ip = request.getRemoteAddr();
-        long waitNanos = perIp.get(ip, key -> new TokenBucket(properties.perIpCapacity(), properties.perIpPerSecond(), now))
-                .tryConsume(now);
+        long waitNanos = 0;
+        if (EXPORT_PATH.equals(request.getRequestURI())) {
+            waitNanos = exportPerIp.get(ip, key -> new TokenBucket(properties.exportCapacity(),
+                    properties.exportPerMinute() / 60, now)).tryConsume(now);
+        }
+        if (waitNanos == 0) {
+            waitNanos = perIp.get(ip, key -> new TokenBucket(properties.perIpCapacity(), properties.perIpPerSecond(), now))
+                    .tryConsume(now);
+        }
         if (waitNanos == 0) {
             waitNanos = global.tryConsume(now);
         }

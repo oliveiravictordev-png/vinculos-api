@@ -1,5 +1,6 @@
 package com.teste.vinculos.application;
 
+import com.teste.vinculos.domain.Companies;
 import com.teste.vinculos.domain.CompanyRecords;
 import com.teste.vinculos.domain.CustomerGateway;
 import com.teste.vinculos.domain.CustomerKey;
@@ -45,7 +46,7 @@ class FindRecordsByCompanyUseCaseTest {
 
     @Test
     void rejectsInvalidCompanyList() {
-        List<String> overLimit = LongStream.rangeClosed(0, FindRecordsByCompanyUseCase.MAX_COMPANIES)
+        List<String> overLimit = LongStream.rangeClosed(0, Companies.MAX)
                 .mapToObj(i -> Documents.generateCnpj((10_000_000L + i) * 10_000 + 1))
                 .toList();
 

@@ -2,16 +2,18 @@ package com.teste.vinculos.web;
 
 import com.teste.vinculos.application.FindCompaniesUseCase;
 import com.teste.vinculos.application.FindRecordsByCompanyUseCase;
-import com.teste.vinculos.domain.CustomerGateway;
+import com.teste.vinculos.application.SearchRecordsUseCase;
+import com.teste.vinculos.domain.AuditEntry;
 import com.teste.vinculos.domain.CustomerKey;
+import com.teste.vinculos.domain.RecordFilter;
+import com.teste.vinculos.support.InMemoryQueryAuditLog;
+import com.teste.vinculos.support.WebSliceConfig;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.cache.CacheManager;
-import org.springframework.cache.support.NoOpCacheManager;
-import org.springframework.context.annotation.Bean;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -25,7 +27,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 
 /** Formato e status das respostas de erro: a API nunca revela rotas com 404/405/415 nem detalhes internos. */
-@WebMvcTest(CustomerController.class)
+@WebMvcTest({CustomerController.class, AuditController.class})
+@Import(WebSliceConfig.class)
 @EnableConfigurationProperties(RateLimitProperties.class)
 class ApiErrorsTest {
 
@@ -35,6 +38,9 @@ class ApiErrorsTest {
     @Autowired
     MockMvcTester mvc;
 
+    @Autowired
+    InMemoryQueryAuditLog auditLog;
+
     @MockitoBean
     FindCompaniesUseCase findCompanies;
 
@@ -42,7 +48,12 @@ class ApiErrorsTest {
     FindRecordsByCompanyUseCase findRecords;
 
     @MockitoBean
-    CustomerGateway gateway;
+    SearchRecordsUseCase search;
+
+    @BeforeEach
+    void clearAudit() {
+        auditLog.entries.clear();
+    }
 
     @Test
     void validRequestStillWorks() {
@@ -71,6 +82,11 @@ class ApiErrorsTest {
     }
 
     @Test
+    void nonNumericQueryParameterIsA400NotA500() {
+        assertInvalidRequest(mvc.get().uri("/api/v1/audit/history?limit=abc").exchange());
+    }
+
+    @Test
     void documentLongerThanAFormattedCnpjIsRejected() {
         MvcTestResult result = post("/api/v1/customers/companies", """
                 {"year": 2026, "documentType": "CPF", "document": "056.858.627-170000000"}""");
@@ -80,22 +96,33 @@ class ApiErrorsTest {
     }
 
     @Test
-    void unexpectedErrorsDoNotLeakDetails() {
+    void invalidSearchFilterIsA400AndIsAuditedAsRejected() {
+        MvcTestResult result = post("/api/v1/customers/search", """
+                {"year": 2026, "documentType": "CPF", "document": "05685862717", "limit": 500}""");
+
+        assertThat(result).hasStatus(HttpStatus.BAD_REQUEST)
+                .bodyJson().extractingPath("$.detail").isEqualTo("limit must be between 1 and " + RecordFilter.MAX_LIMIT);
+        assertThat(auditLog.entries).singleElement()
+                .satisfies(e -> assertThat(e.outcome()).isEqualTo(AuditEntry.Outcome.REJECTED));
+    }
+
+    @Test
+    void historyLimitOutsideTheRangeIsA400() {
+        assertThat(mvc.get().uri("/api/v1/audit/history?limit=0").exchange())
+                .hasStatus(HttpStatus.BAD_REQUEST)
+                .bodyJson().extractingPath("$.detail").isEqualTo("limit must be between 1 and 100");
+    }
+
+    @Test
+    void unexpectedErrorsDoNotLeakDetailsAndAreAuditedAsFailed() {
         given(findCompanies.execute(any(CustomerKey.class))).willThrow(new IllegalStateException("internal secret"));
 
         MvcTestResult result = post("/api/v1/customers/companies", VALID_KEY);
 
         assertThat(result).hasStatus(HttpStatus.INTERNAL_SERVER_ERROR);
         assertThat(result).bodyText().doesNotContain("internal secret").doesNotContain("IllegalStateException");
-    }
-
-    // A aplicação usa @EnableCaching; nestes testes o cache não importa.
-    @TestConfiguration
-    static class NoCache {
-        @Bean
-        CacheManager cacheManager() {
-            return new NoOpCacheManager();
-        }
+        assertThat(auditLog.entries).singleElement()
+                .satisfies(e -> assertThat(e.outcome()).isEqualTo(AuditEntry.Outcome.FAILED));
     }
 
     private MvcTestResult post(String uri, String body) {

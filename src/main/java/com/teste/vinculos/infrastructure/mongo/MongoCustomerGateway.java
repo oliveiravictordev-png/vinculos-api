@@ -7,6 +7,10 @@ import com.mongodb.client.MongoCollection;
 import com.teste.vinculos.domain.CustomerGateway;
 import com.teste.vinculos.domain.CustomerKey;
 import com.teste.vinculos.domain.CustomerRecord;
+import com.teste.vinculos.domain.RecordCursor;
+import com.teste.vinculos.domain.RecordFilter;
+import com.teste.vinculos.domain.RecordPage;
+import com.teste.vinculos.domain.RecordSearchGateway;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.bson.Document;
@@ -18,7 +22,9 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Date;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
@@ -27,7 +33,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
  * Cache Caffeine com sync=true: requisições simultâneas da mesma chave disparam uma única ida ao banco.
  */
 @Component
-public class MongoCustomerGateway implements CustomerGateway {
+public class MongoCustomerGateway implements CustomerGateway, RecordSearchGateway {
 
     private static final Logger log = LogManager.getLogger(MongoCustomerGateway.class);
 
@@ -82,6 +88,71 @@ public class MongoCustomerGateway implements CustomerGateway {
         records.sort(ORDER);
         logElapsed("records", key, start);
         return List.copyOf(records);
+    }
+
+    // Sem cache: com filtros e cursor as combinações são muitas e o acerto seria baixo. A chave do cliente vem
+    // primeiro no filtro, então o índice {a, t, v, e} limita a varredura aos poucos registros dela; produto,
+    // período e cursor são conferidos nesses documentos.
+    @Override
+    public List<CustomerRecord> search(RecordFilter filter, int limit) {
+        long start = System.nanoTime();
+        Document query = searchFilter(filter);
+        RecordCursor cursor = filter.cursor();
+        if (cursor != null) {
+            query.append("$or", List.of(
+                    new Document(Fields.COMPANY, new Document("$gt", cursor.company())),
+                    new Document(Fields.COMPANY, cursor.company()).append(Fields.ID, new Document("$gt", cursor.id()))));
+        }
+        var records = new ArrayList<CustomerRecord>();
+        for (Document d : collection.find(query).projection(PROJECTION)
+                .sort(new Document(Fields.COMPANY, 1).append(Fields.ID, 1))
+                .limit(limit).maxTime(timeoutMs, MILLISECONDS)) {
+            records.add(toRecord(d));
+        }
+        logElapsed("search", filter.key(), start);
+        return List.copyOf(records);
+    }
+
+    @Override
+    public RecordPage.Totals totals(RecordFilter filter) {
+        long start = System.nanoTime();
+        Document totals = collection.aggregate(List.of(
+                        new Document("$match", searchFilter(filter)),
+                        new Document("$group", new Document("_id", null)
+                                .append("records", new Document("$sum", 1L))
+                                .append("cents", new Document("$sum", "$" + Fields.AMOUNT_CENTS))
+                                .append("companies", new Document("$addToSet", "$" + Fields.COMPANY)))))
+                .maxTime(timeoutMs, MILLISECONDS)
+                .first();
+        logElapsed("totals", filter.key(), start);
+        if (totals == null) {
+            return RecordPage.Totals.EMPTY;
+        }
+        return new RecordPage.Totals(totals.get("records", Number.class).longValue(),
+                totals.getList("companies", String.class).size(),
+                BigDecimal.valueOf(totals.get("cents", Number.class).longValue(), 2));
+    }
+
+    private static Document searchFilter(RecordFilter filter) {
+        Document query = filter(filter.key());
+        if (!filter.companies().isEmpty()) {
+            query.append(Fields.COMPANY, new Document("$in", filter.companies()));
+        }
+        if (filter.product() != null) {
+            // Pattern.quote: o texto do usuário é literal, nunca uma expressão regular (evita ReDoS).
+            query.append(Fields.PRODUCT, new Document("$regex", Pattern.quote(filter.product())).append("$options", "i"));
+        }
+        if (filter.updatedFrom() != null || filter.updatedTo() != null) {
+            var range = new Document();
+            if (filter.updatedFrom() != null) {
+                range.append("$gte", Date.from(filter.updatedFrom()));
+            }
+            if (filter.updatedTo() != null) {
+                range.append("$lte", Date.from(filter.updatedTo()));
+            }
+            query.append(Fields.UPDATED_AT, range);
+        }
+        return query;
     }
 
     private static Document filter(CustomerKey key) {

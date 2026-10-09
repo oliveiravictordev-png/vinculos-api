@@ -3,6 +3,7 @@ package com.teste.vinculos.web;
 import com.teste.vinculos.domain.CustomerKey;
 import com.teste.vinculos.infrastructure.seed.DataGenerator;
 import com.teste.vinculos.infrastructure.seed.DataLoader;
+import com.teste.vinculos.support.TestKeys;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -45,9 +46,9 @@ import static org.assertj.core.api.Assertions.assertThat;
         "app.auth.admin-1-password=test-password-1",
         "app.auth.admin-2-username=test-admin-2",
         "app.auth.admin-2-password=test-password-2",
-        "app.auth.jwt-secret=01234567890123456789012345678901",
         "app.auth.issuer=vinculos-api-test",
-        "app.auth.ttl=PT5M"
+        "app.auth.ttl=PT5M",
+        "app.audit.hash-secret=test-audit-secret-0123456789abcdef"
 })
 @AutoConfigureMockMvc(addFilters = false)
 @EnabledOnOs(OS.LINUX)
@@ -71,6 +72,7 @@ class ReplicaSetFailoverTest {
 
     @DynamicPropertySource
     static void mongo(DynamicPropertyRegistry registry) throws Exception {
+        registry.add("app.auth.jwt-private-key", TestKeys::privateKey);
         startReplicaSet();
         String hosts = IntStream.of(ports).mapToObj(p -> "localhost:" + p).collect(Collectors.joining(","));
         registry.add("spring.mongodb.uri",

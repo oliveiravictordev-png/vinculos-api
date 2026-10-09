@@ -2,7 +2,7 @@
 <!-- AsyncLogger (LMAX Disruptor): a thread da requisição só enfileira o evento; a escrita acontece em background. -->
 <Configuration status="WARN">
     <Properties>
-        <Property name="PATTERN">%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%t] %c{1.} - %msg%n%throwable</Property>
+        <Property name="PATTERN">%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%t] [%X{requestId}] %c{1.} - %msg%n%throwable</Property>
     </Properties>
 
     <Appenders>

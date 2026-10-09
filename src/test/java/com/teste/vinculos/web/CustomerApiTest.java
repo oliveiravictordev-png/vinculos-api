@@ -1,10 +1,19 @@
 package com.teste.vinculos.web;
 
 import com.teste.vinculos.domain.CustomerKey;
+import com.teste.vinculos.domain.Documents;
+import com.teste.vinculos.domain.SessionStore;
 import com.teste.vinculos.infrastructure.mongo.Fields;
+import com.teste.vinculos.infrastructure.mongo.MongoQueryAuditLog;
+import com.teste.vinculos.infrastructure.mongo.MongoSchema;
 import com.teste.vinculos.infrastructure.seed.DataGenerator;
 import com.teste.vinculos.infrastructure.seed.DataLoader;
+import com.teste.vinculos.support.TestKeys;
 import com.teste.vinculos.web.dto.RecordsResponse;
+import com.teste.vinculos.web.dto.SearchResponse;
+import org.bson.Document;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
@@ -21,9 +30,12 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mongodb.MongoDBContainer;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,9 +46,9 @@ import static org.assertj.core.api.Assertions.assertThat;
         "app.auth.admin-1-password=test-password-1",
         "app.auth.admin-2-username=test-admin-2",
         "app.auth.admin-2-password=test-password-2",
-        "app.auth.jwt-secret=01234567890123456789012345678901",
         "app.auth.issuer=vinculos-api-test",
-        "app.auth.ttl=PT5M"
+        "app.auth.ttl=PT5M",
+        "app.audit.hash-secret=test-audit-secret-0123456789abcdef"
 })
 @AutoConfigureMockMvc(addFilters = false)
 @Testcontainers(disabledWithoutDocker = true)
@@ -62,9 +74,97 @@ class CustomerApiTest {
     @Autowired
     MongoTemplate mongoTemplate;
 
+    @Autowired
+    SessionStore sessions;
+
+    @DynamicPropertySource
+    static void keys(DynamicPropertyRegistry registry) {
+        registry.add("app.auth.jwt-private-key", TestKeys::privateKey);
+    }
+
     @BeforeAll
     void load() {
         loader.load(TOTAL_RECORDS, 0, 100, 2);
+    }
+
+    @Test
+    void searchPagesThroughAllRecordsWithTotalsOfTheWholeFilter() {
+        long customer = 7;
+        CustomerKey key = DataGenerator.key(customer);
+        var ids = new ArrayList<Long>();
+        String cursor = null;
+        do {
+            String body = "{" + keyJson(key) + ", \"limit\": 2" + (cursor == null ? "" : ", \"cursor\": \"" + cursor + "\"") + "}";
+            var next = new AtomicReference<String>();
+            assertThat(mvc.post().uri("/api/v1/customers/search").contentType(MediaType.APPLICATION_JSON).content(body))
+                    .hasStatusOk().bodyJson().convertTo(SearchResponse.class).satisfies(page -> {
+                        page.items().forEach(item -> ids.add(item.id()));
+                        assertThat(page.totals().records()).isEqualTo(DataGenerator.RECORDS_PER_CUSTOMER);
+                        assertThat(page.totals().companies()).isEqualTo(DataGenerator.companies(customer).size());
+                        next.set(page.nextCursor());
+                    });
+            cursor = next.get();
+        } while (cursor != null);
+
+        assertThat(ids).hasSize(DataGenerator.RECORDS_PER_CUSTOMER).doesNotHaveDuplicates();
+    }
+
+    @Test
+    void searchFiltersByProductAndPeriodUsingTheIndex() {
+        long customer = 11;
+        CustomerKey key = DataGenerator.key(customer);
+        var all = new ArrayList<Document>();
+        DataGenerator.generate(customer, all::add);
+        String product = all.getFirst().getString(Fields.PRODUCT);
+        long expected = all.stream().filter(d -> d.getString(Fields.PRODUCT).equals(product)).count();
+
+        assertThat(mvc.post().uri("/api/v1/customers/search").contentType(MediaType.APPLICATION_JSON)
+                .content("{" + keyJson(key) + ", \"product\": \"" + product.toLowerCase().substring(0, 6) + "\"}"))
+                .hasStatusOk().bodyJson().extractingPath("$.items").asArray().hasSizeGreaterThanOrEqualTo((int) expected);
+        assertThat(mvc.post().uri("/api/v1/customers/search").contentType(MediaType.APPLICATION_JSON)
+                .content("{" + keyJson(key) + ", \"updatedFrom\": \"2999-01-01T00:00:00Z\"}"))
+                .hasStatusOk().bodyJson().extractingPath("$.totals.records").isEqualTo(0);
+        String company = DataGenerator.companies(customer).getFirst();
+        long inCompany = all.stream().filter(d -> d.getString(Fields.COMPANY).equals(company)).count();
+        assertThat(mvc.post().uri("/api/v1/customers/search").contentType(MediaType.APPLICATION_JSON)
+                .content("{" + keyJson(key) + ", \"companies\": [\"" + company + "\"], "
+                        + "\"updatedFrom\": \"2000-01-01T00:00:00Z\", \"updatedTo\": \"2999-01-01T00:00:00Z\"}"))
+                .hasStatusOk().bodyJson().extractingPath("$.totals.records").isEqualTo((int) inCompany);
+
+        Document plan = mongoTemplate.getCollection(Fields.COLLECTION)
+                .find(new Document(Fields.YEAR, key.year()).append(Fields.TYPE, key.type().name())
+                        .append(Fields.DOCUMENT, key.document()).append(Fields.PRODUCT, product))
+                .sort(new Document(Fields.COMPANY, 1).append(Fields.ID, 1))
+                .explain();
+        assertThat(plan.toJson()).contains(MongoSchema.INDEX);
+    }
+
+    @Test
+    void queriesAreAuditedWithMaskedAndHashedDocumentOnly() throws InterruptedException {
+        CustomerKey key = DataGenerator.key(13);
+        mvc.post().uri("/api/v1/customers/companies").contentType(MediaType.APPLICATION_JSON)
+                .content(json(key, null)).exchange();
+
+        var audits = mongoTemplate.getCollection(MongoQueryAuditLog.COLLECTION);
+        Document entry = await(() -> audits.find(new Document("documentMasked", Documents.mask(key.document()))).first());
+        assertThat(entry.getString("action")).isEqualTo("COMPANIES");
+        assertThat(entry.getString("outcome")).isEqualTo("SUCCESS");
+        assertThat(entry.getString("documentHash")).hasSize(64);
+        assertThat(entry.toJson()).doesNotContain(key.document());
+
+        assertThat(mvc.get().uri("/api/v1/audit/history?limit=5"))
+                .hasStatusOk().bodyJson().extractingPath("$.items").asArray().isNotEmpty();
+    }
+
+    @Test
+    void sessionsAreSharedAndRevocable() {
+        String id = sessions.create("test-admin-1", Instant.now().plusSeconds(60));
+
+        assertThat(sessions.isActive(id, "test-admin-1")).isTrue();
+        assertThat(sessions.isActive(id, "test-admin-2")).isFalse();
+        sessions.revoke(id);
+        assertThat(sessions.isActive(id, "test-admin-1")).isFalse();
+        assertThat(sessions.isActive(sessions.create("test-admin-1", Instant.now().minusSeconds(1)), "test-admin-1")).isFalse();
     }
 
     @Test
@@ -121,9 +221,24 @@ class CustomerApiTest {
         assertThat(mongoTemplate.getCollection(Fields.COLLECTION).countDocuments()).isEqualTo(TOTAL_RECORDS);
     }
 
-    private static String json(CustomerKey key, List<String> companies) {
-        String base = "\"year\": %d, \"documentType\": \"%s\", \"document\": \"%s\""
+    // A auditoria é gravada em background: espera até 5 s.
+    private static <T> T await(Supplier<T> lookup) throws InterruptedException {
+        long deadline = System.nanoTime() + 5_000_000_000L;
+        T value;
+        while ((value = lookup.get()) == null && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        assertThat(value).as("audit entry").isNotNull();
+        return value;
+    }
+
+    private static String keyJson(CustomerKey key) {
+        return "\"year\": %d, \"documentType\": \"%s\", \"document\": \"%s\""
                 .formatted(key.year(), key.type(), key.document());
+    }
+
+    private static String json(CustomerKey key, List<String> companies) {
+        String base = keyJson(key);
         if (companies == null) {
             return "{" + base + "}";
         }

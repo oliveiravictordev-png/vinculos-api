@@ -25,9 +25,24 @@ app:
     admin-1-password: ${AUTH_ADMIN1_PASSWORD:}
     admin-2-username: ${AUTH_ADMIN2_USERNAME:}
     admin-2-password: ${AUTH_ADMIN2_PASSWORD:}
-    jwt-secret: ${JWT_SECRET:}
+    jwt-private-key: ${JWT_PRIVATE_KEY:}            # RSA PKCS#8 (Base64 ou PEM): make jwt-key
+    jwt-previous-public-key: ${JWT_PREVIOUS_PUBLIC_KEY:}  # só durante uma rotação de chave
     issuer: ${JWT_ISSUER:vinculos-api}
-    ttl: ${JWT_TTL:PT1H}
+    ttl: ${JWT_TTL:PT15M}
+    refresh-ttl: ${JWT_REFRESH_TTL:PT12H}   # duração máxima da sessão do navegador
+  audit:
+    hash-secret: ${AUDIT_HASH_SECRET:}
+    retention: ${AUDIT_RETENTION:P90D}
+  monitor:
+    interval: PT1M           # janela dos alertas: compara cada minuto com o anterior
+    status-thresholds:       # respostas por minuto, por instância, que disparam alerta
+      401: 30
+      429: 50
+      500: 5
+      503: 5
+    max-slow-requests: 10    # requisições acima de 200 ms por minuto (SLO em management.metrics)
+    min-cache-requests: 100  # abaixo disso a taxa de acerto do minuto não é significativa
+    cache-hit-drop: 0.3      # queda (em pontos de 0 a 1) da taxa de acerto em relação à média recente
   query:
     timeout-ms: 2000         # maxTimeMS no servidor: consulta lenta é abortada em vez de acumular
     slow-ms: 200             # acima disso a consulta é logada em WARN
@@ -37,6 +52,8 @@ app:
     per-ip-per-second: 20    # ritmo sustentado por IP
     global-capacity: 600     # rajada da instância inteira
     global-per-second: 300   # ritmo sustentado da instância
+    export-capacity: 3       # exportações em rajada por IP
+    export-per-minute: 6     # exportações sustentadas por IP
 
 seed:
   total-records: 1000000000
@@ -45,6 +62,10 @@ seed:
   workers: 0                 # 0 = número de CPUs
 
 management:
+  metrics:
+    distribution:
+      slo:
+        http.server.requests: 200ms   # conta quantas requisições passam de 200 ms (alerta de lentidão)
   endpoints:
     web:
       exposure:

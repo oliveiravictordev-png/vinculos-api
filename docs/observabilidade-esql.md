@@ -9,6 +9,7 @@ Todas as consultas abaixo foram **executadas contra os dados reais** do projeto 
 O que a API registra:
 - **WARN:** `Slow companies query: 250 ms for CustomerKey[...]` (consulta acima de `app.query.slow-ms`).
 - **ERROR:** `MongoDB query failed (code N)`, quando a API responde 503, e `Unexpected error`, quando responde 500.
+- **ERROR:** `ALERT ...`, quando o monitor da API passa de um limite (seção [Alertas](#alertas-from-logs)).
 - **INFO:** subida da aplicação, criação da coleção e do índice.
 
 ### 0. Últimos logs (para conferir os dados)
@@ -165,6 +166,27 @@ FROM metrics*
 | STATS heap_mb = ROUND(MAX(heap) / 1048576.0, 1) BY minute = BUCKET(@timestamp, 10 minutes)
 | SORT minute
 ```
+
+## Alertas (`FROM logs*`)
+
+### 15. Alertas da API (regra de alerta e tabela)
+
+O `OperationalMonitor` loga cada alerta em ERROR com o prefixo `ALERT`:
+- `ALERT http_status status=401 count=35 window=PT1M`
+- `ALERT slow_requests over_ms=200 count=12 window=PT1M`
+- `ALERT cache_hit_drop cache=companies rate=0.30 baseline=0.90 requests=140`
+
+Para virar notificação: **Stack Management → Rules → Create rule → Elasticsearch query**, com tipo ES|QL, a cada 1 minuto, alertando quando a consulta abaixo devolver alguma linha. A ação pode ser e-mail, Slack ou webhook.
+
+```esql
+FROM logs*,-logstash*,filebeat-*
+| WHERE service.name == "vinculos-api" AND message LIKE "ALERT *"
+| GROK message "ALERT %{WORD:alert} %{GREEDYDATA:details}"
+| STATS occurrences = COUNT(*), last_seen = MAX(@timestamp) BY alert, details, service.instance.id
+| SORT last_seen DESC
+```
+
+O formato dos alertas foi conferido com a API local; esta consulta ainda não foi executada contra os dados do Elastic (os alertas só aparecem lá quando um limite é ultrapassado em produção). Os alertas de fora da API (API fora do ar, MongoDB sem primário, replicação atrasada, disco) vêm do `deploy/monitor.sh`, no journal da VPS e no webhook.
 
 ## Gerar dados para os gráficos
 
