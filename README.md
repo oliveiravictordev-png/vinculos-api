@@ -521,10 +521,10 @@ Os alertas ficam em dois lugares, porque um monitor que roda dentro da API cai j
 | replica set atrasado | `monitor.sh` | secundário mais de 30 s atrás do primário |
 | disco | `monitor.sh` | uso de `/` acima de 80% |
 | muitos 401, 429, 500 ou 503 | `OperationalMonitor` (dentro da API, por minuto e por instância) | 30, 50, 5 e 5 respostas por minuto |
-| consultas lentas | `OperationalMonitor` | 10 requisições acima de 200 ms por minuto (SLO do Micrometer) |
+| consultas lentas | `OperationalMonitor` | 10 consultas ao MongoDB acima de 200 ms (`app.query.slow-ms`) por minuto |
 | queda brusca de acertos do cache | `OperationalMonitor` | taxa do minuto 30 pontos abaixo da média recente (com 100+ acessos) |
 
-- **Comparação por janela:** o monitor da API compara cada minuto com o anterior, porque os contadores do Micrometer são acumulados desde a subida. Os limites ficam em `app.monitor` no `application.yml`.
+- **Comparação por janela:** o monitor da API compara cada minuto com o anterior, porque os contadores do Micrometer são acumulados desde a subida. Ele usa só contadores: os buckets de histograma (SLO) do Micrometer são uma janela deslizante de ~2 minutos, e a diferença entre duas fotos deles gerou falsos alertas de lentidão no primeiro teste em produção. Os limites ficam em `app.monitor` no `application.yml`.
 - **Saída dos alertas:**
   - os do host vão ao journal (`journalctl -t vinculos-monitor`) e, se `ALERT_WEBHOOK_URL` estiver no `deploy/.env`, a um webhook (Slack, Discord, ntfy). O webhook só recebe mensagem quando o conjunto de alertas muda.
   - os da API saem no log em ERROR com o prefixo `ALERT` e chegam ao Elastic pelo agente. No Kibana, uma regra *Elasticsearch query* (ES|QL, a cada minuto) sobre `FROM logs*,-logstash*,filebeat-* | WHERE service.name == "vinculos-api" AND message LIKE "ALERT *"` vira notificação (consulta 15 de [`docs/observabilidade-esql.md`](docs/observabilidade-esql.md)).

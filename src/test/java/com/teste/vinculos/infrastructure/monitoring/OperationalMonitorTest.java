@@ -1,6 +1,7 @@
 package com.teste.vinculos.infrastructure.monitoring;
 
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.teste.vinculos.infrastructure.mongo.MongoCustomerGateway;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -40,14 +41,14 @@ class OperationalMonitorTest {
     }
 
     @Test
-    void alertsOnRequestsSlowerThanTheSlo() {
+    void alertsOnSlowQueriesWithinTheWindow() {
+        var slow = registry.counter(MongoCustomerGateway.SLOW_QUERIES);
         monitor.check();
-        requests(200, 9, 250);
-        requests(200, 100, 50);
+        slow.increment(9);
         assertThat(monitor.check()).isEmpty();
 
-        requests(200, 10, 250);
-        assertThat(monitor.check()).containsExactly("slow_requests over_ms=200 count=10 window=PT1M");
+        slow.increment(10);
+        assertThat(monitor.check()).containsExactly("slow_queries count=10 window=PT1M");
     }
 
     @Test
@@ -74,7 +75,6 @@ class OperationalMonitorTest {
         Timer timer = Timer.builder("http.server.requests")
                 .tag("status", Integer.toString(status))
                 .tag("uri", "/api/v1/customers/companies")
-                .serviceLevelObjectives(Duration.ofMillis(OperationalMonitor.SLO_MS))
                 .register(registry);
         for (int i = 0; i < count; i++) {
             timer.record(Duration.ofMillis(millis));

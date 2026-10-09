@@ -11,6 +11,8 @@ import com.teste.vinculos.domain.RecordCursor;
 import com.teste.vinculos.domain.RecordFilter;
 import com.teste.vinculos.domain.RecordPage;
 import com.teste.vinculos.domain.RecordSearchGateway;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.bson.Document;
@@ -46,11 +48,15 @@ public class MongoCustomerGateway implements CustomerGateway, RecordSearchGatewa
     private static final Comparator<CustomerRecord> ORDER =
             Comparator.comparing(CustomerRecord::company).thenComparingLong(CustomerRecord::id);
 
+    /** Contador de consultas acima de {@code app.query.slow-ms}, lido pelo monitor de alertas. */
+    public static final String SLOW_QUERIES = "vinculos.query.slow";
+
     private final MongoCollection<Document> collection;
     private final long timeoutMs;
     private final long slowMs;
+    private final Counter slowQueries;
 
-    public MongoCustomerGateway(MongoTemplate mongo,
+    public MongoCustomerGateway(MongoTemplate mongo, MeterRegistry metrics,
                                 @Value("${app.query.timeout-ms:2000}") long timeoutMs,
                                 @Value("${app.query.slow-ms:200}") long slowMs) {
         // Read concern majority: só devolve dado confirmado pela maioria do replica set (não sofre rollback).
@@ -62,6 +68,9 @@ public class MongoCustomerGateway implements CustomerGateway, RecordSearchGatewa
                 .withWriteConcern(WriteConcern.MAJORITY);
         this.timeoutMs = timeoutMs;
         this.slowMs = slowMs;
+        this.slowQueries = Counter.builder(SLOW_QUERIES)
+                .description("MongoDB queries slower than app.query.slow-ms")
+                .register(metrics);
     }
 
     @Override
@@ -174,6 +183,7 @@ public class MongoCustomerGateway implements CustomerGateway, RecordSearchGatewa
     private void logElapsed(String query, CustomerKey key, long start) {
         long ms = (System.nanoTime() - start) / 1_000_000;
         if (ms >= slowMs) {
+            slowQueries.increment();
             log.warn("Slow {} query: {} ms for {}", query, ms, key);
         } else {
             log.debug("{} query: {} ms for {}", query, ms, key);

@@ -126,7 +126,7 @@ Camadas no estilo clean/hexagonal. **A dependência só aponta para dentro:** `w
 - Consultas acima de `app.query.slow-ms` são logadas em WARN.
 - `X-Request-Id` (`RequestIdFilter`) em toda resposta, em todo log (`%X{requestId}`) e na auditoria.
 - **Alertas em dois lugares:**
-  - o que só a API vê (401/429/500/503, lentidão acima de 200 ms, queda de acertos do cache) sai do `OperationalMonitor` como log ERROR `ALERT ...`, comparando janelas, nunca o contador acumulado;
+  - o que só a API vê (401/429/500/503, consultas ao MongoDB acima de `app.query.slow-ms`, queda de acertos do cache) sai do `OperationalMonitor` como log ERROR `ALERT ...`, comparando janelas de contadores acumulados (nunca o valor acumulado em si, nem buckets de histograma, que são uma janela deslizante);
   - o que precisa ser visto de fora (API fora do ar, instâncias, primário, replicação, disco) fica no `deploy/monitor.sh` (timer `vinculos-monitor`).
 
   Alerta novo entra num dos dois, com o limite documentado no README.

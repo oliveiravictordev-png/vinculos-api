@@ -9,12 +9,12 @@ import java.util.Map;
  * Limites dos alertas da aplicação, sempre por janela ({@code interval}) e por instância.
  *
  * @param statusThresholds respostas com o status (401, 429, 500, 503...) por janela que disparam alerta
- * @param maxSlowRequests  requisições acima do SLO de 200 ms por janela
+ * @param maxSlowQueries   consultas ao MongoDB acima de app.query.slow-ms por janela
  * @param minCacheRequests acessos mínimos ao cache na janela para avaliar a taxa de acerto
  * @param cacheHitDrop     queda da taxa de acerto (0 a 1) em relação à média das janelas anteriores
  */
 @ConfigurationProperties("app.monitor")
-public record MonitorProperties(Duration interval, Map<Integer, Long> statusThresholds, long maxSlowRequests,
+public record MonitorProperties(Duration interval, Map<Integer, Long> statusThresholds, long maxSlowQueries,
                                 long minCacheRequests, double cacheHitDrop) {
 
     public MonitorProperties {

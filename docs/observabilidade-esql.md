@@ -173,7 +173,7 @@ FROM metrics*
 
 O `OperationalMonitor` loga cada alerta em ERROR com o prefixo `ALERT`:
 - `ALERT http_status status=401 count=35 window=PT1M`
-- `ALERT slow_requests over_ms=200 count=12 window=PT1M`
+- `ALERT slow_queries count=12 window=PT1M` (consultas ao MongoDB acima de `app.query.slow-ms`)
 - `ALERT cache_hit_drop cache=companies rate=0.30 baseline=0.90 requests=140`
 
 Para virar notificação: **Stack Management → Rules → Create rule → Elasticsearch query**, com tipo ES|QL, a cada 1 minuto, alertando quando a consulta abaixo devolver alguma linha. A ação pode ser e-mail, Slack ou webhook.

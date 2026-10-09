@@ -40,7 +40,7 @@ app:
       429: 50
       500: 5
       503: 5
-    max-slow-requests: 10    # requisições acima de 200 ms por minuto (SLO em management.metrics)
+    max-slow-queries: 10     # consultas ao MongoDB acima de app.query.slow-ms por minuto
     min-cache-requests: 100  # abaixo disso a taxa de acerto do minuto não é significativa
     cache-hit-drop: 0.3      # queda (em pontos de 0 a 1) da taxa de acerto em relação à média recente
   query:
@@ -62,10 +62,6 @@ seed:
   workers: 0                 # 0 = número de CPUs
 
 management:
-  metrics:
-    distribution:
-      slo:
-        http.server.requests: 200ms   # conta quantas requisições passam de 200 ms (alerta de lentidão)
   endpoints:
     web:
       exposure:
