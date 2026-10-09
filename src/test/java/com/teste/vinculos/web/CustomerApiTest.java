@@ -2,6 +2,7 @@ package com.teste.vinculos.web;
 
 import com.teste.vinculos.domain.CustomerKey;
 import com.teste.vinculos.domain.Documents;
+import com.teste.vinculos.domain.LoginAttemptStore;
 import com.teste.vinculos.domain.SessionStore;
 import com.teste.vinculos.infrastructure.mongo.Fields;
 import com.teste.vinculos.infrastructure.mongo.MongoQueryAuditLog;
@@ -31,6 +32,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mongodb.MongoDBContainer;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.TreeSet;
@@ -76,6 +78,9 @@ class CustomerApiTest {
 
     @Autowired
     SessionStore sessions;
+
+    @Autowired
+    LoginAttemptStore loginAttempts;
 
     @DynamicPropertySource
     static void keys(DynamicPropertyRegistry registry) {
@@ -154,6 +159,23 @@ class CustomerApiTest {
 
         assertThat(mvc.get().uri("/api/v1/audit/history?limit=5"))
                 .hasStatusOk().bodyJson().extractingPath("$.items").asArray().isNotEmpty();
+    }
+
+    @Test
+    void loginFailuresAreCountedAtomicallyAndLockTheUser() {
+        Instant forget = Instant.now().plusSeconds(3600);
+
+        assertThat(loginAttempts.recordFailure("lock-test", forget)).isEqualTo(1);
+        assertThat(loginAttempts.recordFailure("lock-test", forget)).isEqualTo(2);
+        assertThat(loginAttempts.lockedUntil("lock-test")).isNull();
+
+        Instant until = Instant.now().plusSeconds(60).truncatedTo(ChronoUnit.MILLIS);
+        loginAttempts.lockUntil("lock-test", until);
+        assertThat(loginAttempts.lockedUntil("lock-test")).isEqualTo(until);
+
+        loginAttempts.clear("lock-test");
+        assertThat(loginAttempts.lockedUntil("lock-test")).isNull();
+        assertThat(loginAttempts.recordFailure("lock-test", forget)).isEqualTo(1);
     }
 
     @Test

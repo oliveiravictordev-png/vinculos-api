@@ -61,13 +61,13 @@ Camadas no estilo clean/hexagonal. **A dependência só aponta para dentro:** `w
   | 400 | dado inválido (mensagem específica) **ou** requisição malformada: rota inexistente, método errado, JSON quebrado, content-type errado, parâmetro de query inválido (mensagem genérica `Invalid request`) |
   | 401 | login inválido (`Invalid username or password`, a mesma para usuário inexistente) ou token ausente, expirado, adulterado ou de sessão revogada (`Authentication required`) |
   | 403 | token válido sem o escopo do endpoint |
-  | 429 | acima do rate limit, com `Retry-After` |
+  | 429 | acima do rate limit, ou login bloqueado por senhas erradas seguidas (`LoginThrottle`), sempre com `Retry-After` |
   | 500 | erro inesperado, **sem** classe, mensagem ou stack trace |
   | 503 | banco indisponível ou consulta acima do `maxTimeMS` |
 
   **Nunca responda 404, 405 ou 415**: eles ajudam a mapear a API. Não exponha detalhes internos em mensagem de erro.
-- **Limites de entrada:** documento com no máximo 18 caracteres (o CNPJ formatado), no máximo 100 empresas por consulta, página de 1 a 200, produto com até 40 caracteres, cursor com até 64, exportação de até 5.000 linhas, histórico de 1 a 100. Toda entrada nova precisa de um limite.
-- **Rate limit** (`RateLimitFilter`): por IP do cliente (visto pelo proxy, `forward-headers-strategy: native`) e global, mais um balde próprio e menor para `/export`. `/actuator` fica fora dele. Os baldes são por instância: com N instâncias, o limite efetivo por IP chega a N vezes o configurado.
+- **Limites de entrada:** documento com no máximo 18 caracteres (o CNPJ formatado), no máximo 100 empresas por consulta, página de 1 a 200, produto com até 40 caracteres, cursor com até 64, exportação de até 5.000 linhas, histórico de 1 a 100, usuário com até 64 caracteres e senha com até 72 bytes (o limite do BCrypt). Toda entrada nova precisa de um limite.
+- **Rate limit** (`RateLimitFilter`): por IP do cliente (visto pelo proxy, `forward-headers-strategy: native`) e global, mais baldes próprios e menores para `/export` e para o login (`/auth/token` e `/auth/session`). `/actuator` fica fora dele. Os baldes são por instância: com N instâncias, o limite efetivo por IP chega a N vezes o configurado.
 - **Paginação por cursor** (`RecordCursor`, opaco em Base64), nunca por `skip`. Lista nova que pode crescer segue o mesmo padrão.
 - **Toda consulta a dado de cliente passa por `AuditQueriesUseCase.run`**, inclusive em endpoints novos, para que as falhas também fiquem registradas.
 
@@ -77,7 +77,8 @@ Camadas no estilo clean/hexagonal. **A dependência só aponta para dentro:** `w
 - **Nunca renomeie** a coleção `vinculos`, os campos nem o índice `ix_ano_tipo_documento_empresa`: há bases carregadas com 1 bilhão de registros.
 - **Coleção clusterizada por `_id`** (sem índice `_id` separado), validada por `$jsonSchema` estrito, com zstd. Se o servidor recusar `storageEngine` (Atlas), a criação cai para a compressão padrão.
 - **Um índice:** `{a, t, v, e}`. Toda consulta nova na coleção `vinculos` precisa usar esse índice (confira com `explain`, como no `CustomerApiTest`) ou justificar outro índice, medindo o custo em disco e RAM.
-- **Coleções auxiliares** `query_audit` e `auth_sessions`: pequenas, com nomes de campo legíveis e **índice TTL** (a auditoria expira por `AUDIT_RETENTION`, as sessões no vencimento). Dado novo que cresce sem limite precisa de TTL. Não renomeie essas coleções nem os índices delas: `MongoIndexes.ensureTtl` ajusta só o tempo.
+- **Proteção do login por usuário, não por IP** (`LoginThrottle`): 5 senhas erradas seguidas bloqueiam por 1 min, e o tempo dobra a cada nova falha até 15 min. O front chega pela Vercel com um IP só, então bloquear por IP travaria todos os usuários; por IP existe só o rate limit do login. Durante o bloqueio a senha não é conferida.
+- **Coleções auxiliares** `query_audit`, `auth_sessions` e `login_attempts`: pequenas, com nomes de campo legíveis e **índice TTL** (a auditoria expira por `AUDIT_RETENTION`, as sessões no vencimento, as tentativas 1 h depois da última falha). Dado novo que cresce sem limite precisa de TTL. Não renomeie essas coleções nem os índices delas: `MongoIndexes.ensureTtl` ajusta só o tempo.
 - **Dinheiro em centavos (`long`)**, exposto como `BigDecimal`. Nunca `double`.
 - **Leitura confiável e disponível:** read concern `majority` + `primaryPreferred` (um secundário responde durante a eleição de um novo primário, sem dado que possa sofrer rollback), `maxTimeMS` em toda consulta, `serverSelectionTimeoutMS=5000` na URI e projeção só dos campos necessários.
 - **Duas instâncias da API** (`replicas: 2` no compose), sem estado na instância. O deploy é rolling (`auto-deploy.sh`): sobe as novas ao lado das antigas e só para as antigas quando todas as novas estão saudáveis. Não troque por `docker compose up --build`, que recria todas de uma vez e derruba a API.

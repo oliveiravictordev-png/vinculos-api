@@ -54,6 +54,8 @@ app:
     global-per-second: 300   # ritmo sustentado da instância
     export-capacity: 3       # exportações em rajada por IP
     export-per-minute: 6     # exportações sustentadas por IP
+    login-capacity: 10       # tentativas de login em rajada por IP (o bloqueio por usuário fica no LoginThrottle)
+    login-per-minute: 30     # tentativas de login sustentadas por IP (alto: o front chega pela Vercel com um IP só)
 
 seed:
   total-records: 1000000000

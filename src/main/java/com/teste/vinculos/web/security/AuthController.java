@@ -1,6 +1,8 @@
 package com.teste.vinculos.web.security;
 
+import com.teste.vinculos.application.LoginThrottle;
 import com.teste.vinculos.domain.InvalidDataException;
+import com.teste.vinculos.web.RateLimitExceededException;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -8,11 +10,14 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.userdetails.UserDetailsService;
@@ -25,7 +30,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -44,9 +51,16 @@ import java.util.Map;
 @RequestMapping("/api/v1/auth")
 @Profile("!seed")
 @Tag(name = "Authentication", description = "Login, sessão do navegador e chaves públicas dos tokens")
+@ApiResponse(responseCode = "429", description = "Login bloqueado por senhas erradas seguidas (5 erros: 1 min, dobrando até "
+        + "15 min) ou acima do rate limit do login; tente de novo após o Retry-After",
+        content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
 @ApiResponse(responseCode = "401", description = "Usuário ou senha inválidos, ou sessão ausente, expirada ou revogada",
         content = @Content(mediaType = "application/problem+json", schema = @Schema(implementation = ProblemDetail.class)))
 public class AuthController {
+
+    static final int MAX_PASSWORD_BYTES = 72;
+
+    private static final Logger log = LogManager.getLogger(AuthController.class);
 
     private final AuthenticationManager authenticationManager;
     private final UserDetailsService users;
@@ -54,16 +68,19 @@ public class AuthController {
     private final ActiveSessions sessions;
     private final JwtKeys keys;
     private final AuthProperties properties;
+    private final LoginThrottle throttle;
     private final Clock clock;
 
     public AuthController(AuthenticationManager authenticationManager, UserDetailsService users, TokenService tokens,
-                          ActiveSessions sessions, JwtKeys keys, AuthProperties properties, Clock clock) {
+                          ActiveSessions sessions, JwtKeys keys, AuthProperties properties, LoginThrottle throttle,
+                          Clock clock) {
         this.authenticationManager = authenticationManager;
         this.users = users;
         this.tokens = tokens;
         this.sessions = sessions;
         this.keys = keys;
         this.properties = properties;
+        this.throttle = throttle;
         this.clock = clock;
     }
 
@@ -146,13 +163,40 @@ public class AuthController {
         return keys.publicKeys().toJSONObject(true);
     }
 
+    // Bloqueado: 429 sem conferir a senha (não revela se ela estava certa). Senha errada conta para o bloqueio; certa
+    // zera a contagem. Usuário inexistente conta igual, para a resposta não revelar quais usuários existem.
     private Authentication authenticate(LoginRequest request) {
         if (request.username() == null || request.username().isBlank()
                 || request.password() == null || request.password().isBlank()) {
             throw new InvalidDataException("Username and password are required");
         }
-        return authenticationManager.authenticate(
-                UsernamePasswordAuthenticationToken.unauthenticated(request.username(), request.password()));
+        if (request.username().length() > LoginThrottle.MAX_USERNAME_LENGTH) {
+            throw new InvalidDataException("username must have at most " + LoginThrottle.MAX_USERNAME_LENGTH + " characters");
+        }
+        // O BCrypt só usa os primeiros 72 bytes e o Spring recusa senhas maiores com erro interno (500).
+        if (request.password().getBytes(StandardCharsets.UTF_8).length > MAX_PASSWORD_BYTES) {
+            throw new InvalidDataException("password must have at most " + MAX_PASSWORD_BYTES + " bytes");
+        }
+        Duration locked = throttle.remainingLock(request.username());
+        if (!locked.isZero()) {
+            throw RateLimitExceededException.loginLocked(seconds(locked));
+        }
+        try {
+            Authentication user = authenticationManager.authenticate(
+                    UsernamePasswordAuthenticationToken.unauthenticated(request.username(), request.password()));
+            throttle.succeeded(request.username());
+            return user;
+        } catch (BadCredentialsException e) {
+            Duration lock = throttle.failed(request.username());
+            if (!lock.isZero()) {
+                log.warn("Login locked for {} after repeated failures: {} s", request.username(), lock.toSeconds());
+            }
+            throw e;
+        }
+    }
+
+    private static long seconds(Duration duration) {
+        return Math.max(1, (duration.toMillis() + 999) / 1000);
     }
 
     private ResponseEntity<SessionResponse> withCookies(String username, List<String> scopes, String sessionId,

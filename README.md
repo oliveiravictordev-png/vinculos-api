@@ -162,6 +162,12 @@ As duas contas administrativas são criadas em memória na inicialização. Não
 - **Rotação sem derrubar sessões:** o `kid` de cada token é o thumbprint da chave. Na troca, a chave antiga vira `JWT_PREVIOUS_PUBLIC_KEY` e os tokens assinados com ela valem até vencer.
 - **Escopos:** `customers:read` (consultas), `customers:export` (exportação) e `audit:read` (histórico). Hoje os dois administradores têm os três.
 - **Revogação:** toda sessão fica na coleção `auth_sessions`, compartilhada pelas instâncias. O logout vale na hora na instância que o recebeu e em até 30 s nas outras (cache local da verificação).
+- **Proteção contra tentativa e erro de senha:**
+  - **Por usuário:** depois de 5 senhas erradas seguidas, o usuário fica bloqueado por 1 min, e cada nova falha dobra o tempo (2, 4, 8 min) até 15 min. Um login certo zera a contagem.
+  - Durante o bloqueio, os dois logins respondem 429 com `Retry-After` sem conferir a senha, então o atacante não descobre se acertou. Usuário inexistente conta igual, e a resposta não revela quais usuários existem.
+  - O contador fica na coleção `login_attempts`, com `$inc` atômico, e as duas instâncias somam juntas.
+  - **Por IP, só rate limit**, sem bloqueio: 10 tentativas em rajada e 30 por minuto. O front chega pela Vercel com um IP só, então bloquear por IP travaria todos os usuários.
+  - Na prática, isso deixa uns 10 palpites por usuário por hora, em vez de milhares.
 
 **Dois jeitos de autenticar:**
 
@@ -283,7 +289,7 @@ Os registros expiram em 90 dias (`AUDIT_RETENTION`, índice TTL). A gravação �
 | 400 | dado inválido (ano fora de 1900–2100, tipo desconhecido, dígito verificador errado, documento com mais de 18 caracteres) ou requisição malformada (rota inexistente, método errado, JSON quebrado), esta com a mensagem genérica `Invalid request` |
 | 401 | credenciais inválidas, ou token ausente, expirado, adulterado ou de sessão revogada |
 | 403 | token válido, mas sem o escopo do endpoint |
-| 429 | acima do rate limit, com `Retry-After` |
+| 429 | acima do rate limit, ou login bloqueado por senhas erradas seguidas, com `Retry-After` |
 | 500 | erro inesperado, sem nenhum detalhe interno |
 | 503 | timeout ou indisponibilidade do banco |
 
@@ -495,7 +501,8 @@ Hoje há **duas instâncias** da API, e os dados não mudam depois da carga, ent
   - JWT RS256 com rotação de chave por `kid`;
   - escopos por grupo de endpoints;
   - sessão do navegador só em cookies `HttpOnly` + `SameSite=Strict`;
-  - refresh e revogação compartilhados entre as instâncias.
+  - refresh e revogação compartilhados entre as instâncias;
+  - bloqueio progressivo do usuário após senhas erradas seguidas.
 - **Auditoria** de toda consulta a dados de cliente, com documento mascarado + HMAC e expiração em 90 dias ([detalhes](#5-histórico-de-consultas-auditoria)).
 - **Dependências vigiadas:** o Dependabot abre PRs semanais (Maven, Docker e actions) e emite alertas de vulnerabilidade.
 - **Segredos fora do Git:** ficam em arquivos `*.env` ignorados. O exemplo sem segredo está em `deploy/.env.example`.
@@ -622,7 +629,7 @@ O histórico fica em `journalctl -u vinculos-deploy`, e os alertas do host em `j
 - **Sharding** por `{ a: 1, t: 1, v: 1 }`, se o volume crescer além de um nó.
 - **Redis** como cache L2 compartilhado (com o Caffeine como L1) e para um rate limit exato entre as instâncias, quando o tráfego justificar.
 - **Login corporativo (OIDC):** Keycloak ou Entra ID no lugar dos dois usuários em memória, com MFA e perfis de acesso. A API já valida JWT RS256 por `kid`, então passaria a confiar no JWKS do provedor.
-- **Proteção do login:** bloqueio temporário e atraso progressivo por usuário após tentativas erradas.
+- **Alerta de bloqueios de login:** hoje o bloqueio sai no log em WARN (`Login locked for ...`). Um alerta próprio ajudaria a ver um ataque distribuído entre vários usuários.
 - **Backup do MongoDB:** diário, criptografado, fora da VPS e com teste de restauração. O replica set protege da queda de um nó, não de um dado apagado.
 - **Imagem imutável:** a CI publica a imagem num registry e a VPS só a baixa, com rollback por tag, scan de vulnerabilidades e SBOM.
 - **Domínio próprio com Cloudflare** na frente da API, para proteção contra DDoS e para esconder o IP da VPS.

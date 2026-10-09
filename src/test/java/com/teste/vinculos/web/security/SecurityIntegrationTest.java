@@ -3,7 +3,9 @@ package com.teste.vinculos.web.security;
 import com.teste.vinculos.application.FindCompaniesUseCase;
 import com.teste.vinculos.application.FindRecordsByCompanyUseCase;
 import com.teste.vinculos.application.SearchRecordsUseCase;
+import com.teste.vinculos.application.LoginThrottle;
 import com.teste.vinculos.domain.SessionStore;
+import com.teste.vinculos.support.InMemoryLoginAttemptStore;
 import com.teste.vinculos.support.InMemorySessionStore;
 import com.teste.vinculos.support.TestKeys;
 import com.teste.vinculos.support.WebSliceConfig;
@@ -11,6 +13,7 @@ import com.teste.vinculos.web.AuditController;
 import com.teste.vinculos.web.CustomerController;
 import com.teste.vinculos.web.RateLimitProperties;
 import jakarta.servlet.http.Cookie;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -29,6 +32,7 @@ import org.springframework.test.web.servlet.assertj.MockMvcTester;
 import org.springframework.test.web.servlet.assertj.MvcTestResult;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Clock;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -68,6 +72,16 @@ class SecurityIntegrationTest {
         SessionStore sessionStore() {
             return new InMemorySessionStore();
         }
+
+        @Bean
+        InMemoryLoginAttemptStore loginAttemptStore() {
+            return new InMemoryLoginAttemptStore();
+        }
+
+        @Bean
+        LoginThrottle loginThrottle(InMemoryLoginAttemptStore attempts, Clock clock) {
+            return new LoginThrottle(attempts, clock);
+        }
     }
 
     @Autowired
@@ -78,6 +92,15 @@ class SecurityIntegrationTest {
 
     @Autowired
     TokenService tokens;
+
+    @Autowired
+    InMemoryLoginAttemptStore loginAttempts;
+
+    // O contexto (e o contador de falhas) é compartilhado entre os testes: cada um começa sem bloqueios.
+    @AfterEach
+    void clearLoginAttempts() {
+        loginAttempts.clearAll();
+    }
 
     @MockitoBean
     FindCompaniesUseCase findCompanies;
@@ -232,6 +255,49 @@ class SecurityIntegrationTest {
                 assertThat(key).doesNotContainKeys("d", "p", "q");
             });
         });
+    }
+
+    @Test
+    void repeatedWrongPasswordsLockTheUserWithout401sRevealingTheLock() {
+        String wrong = "{\"username\":\"test-admin-2\",\"password\":\"wrong\"}";
+        String right = "{\"username\":\"test-admin-2\",\"password\":\"test-password-2\"}";
+        for (int i = 1; i <= LoginThrottle.FREE_FAILURES; i++) {
+            assertThat(postJson("/api/v1/auth/token", wrong)).hasStatus(HttpStatus.UNAUTHORIZED);
+        }
+
+        // Bloqueado: nem a senha certa entra, e a resposta é 429 com Retry-After, pelos dois logins.
+        assertThat(postJson("/api/v1/auth/token", right)).hasStatus(HttpStatus.TOO_MANY_REQUESTS)
+                .hasHeader("Retry-After", "60")
+                .bodyJson().extractingPath("$.detail").isEqualTo("Too many failed login attempts, retry in 60 s");
+        // Variar maiúsculas e espaços não zera a contagem.
+        assertThat(postJson("/api/v1/auth/session", "{\"username\":\" TEST-ADMIN-2 \",\"password\":\"test-password-2\"}"))
+                .hasStatus(HttpStatus.TOO_MANY_REQUESTS);
+        // O outro usuário não é afetado.
+        assertThat(postJson("/api/v1/auth/token", ADMIN_1)).hasStatusOk();
+    }
+
+    @Test
+    void successfulLoginResetsTheFailureCount() {
+        String wrong = "{\"username\":\"test-admin-1\",\"password\":\"wrong\"}";
+        for (int i = 1; i < LoginThrottle.FREE_FAILURES; i++) {
+            postJson("/api/v1/auth/token", wrong);
+        }
+        assertThat(postJson("/api/v1/auth/token", ADMIN_1)).hasStatusOk();
+
+        assertThat(postJson("/api/v1/auth/token", wrong)).hasStatus(HttpStatus.UNAUTHORIZED);
+        assertThat(postJson("/api/v1/auth/token", ADMIN_1)).hasStatusOk();
+    }
+
+    @Test
+    void oversizedCredentialsAreA400NotA500() {
+        assertThat(postJson("/api/v1/auth/token",
+                "{\"username\":\"" + "u".repeat(65) + "\",\"password\":\"x\"}"))
+                .hasStatus(HttpStatus.BAD_REQUEST)
+                .bodyJson().extractingPath("$.detail").isEqualTo("username must have at most 64 characters");
+        assertThat(postJson("/api/v1/auth/token",
+                "{\"username\":\"test-admin-1\",\"password\":\"" + "p".repeat(73) + "\"}"))
+                .hasStatus(HttpStatus.BAD_REQUEST)
+                .bodyJson().extractingPath("$.detail").isEqualTo("password must have at most 72 bytes");
     }
 
     @Test

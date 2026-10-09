@@ -17,11 +17,14 @@ import org.springframework.web.servlet.HandlerExceptionResolver;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.LongSupplier;
 
 /**
  * Rate limit em /api: um balde de fichas por IP (barra quem martela a API) e um global (protege a instância). A
- * exportação consome também de um balde próprio por IP, bem menor.
+ * exportação e o login consomem também de baldes próprios por IP, bem menores.
  * O IP é o do cliente visto pelo proxy reverso (server.forward-headers-strategy), não o X-Forwarded-For enviado
  * pelo próprio cliente, que seria falsificável. Acima do limite, a resposta 429 é montada pelo
  * {@link ApiExceptionHandler}, no mesmo formato dos demais erros.
@@ -37,15 +40,11 @@ public class RateLimitFilter extends OncePerRequestFilter {
     private final LongSupplier clock;
     private final TokenBucket global;
     static final String EXPORT_PATH = "/api/v1/customers/export";
+    static final Set<String> LOGIN_PATHS = Set.of("/api/v1/auth/token", "/api/v1/auth/session");
 
-    private final Cache<String, TokenBucket> perIp = Caffeine.newBuilder()
-            .maximumSize(100_000)
-            .expireAfterAccess(Duration.ofMinutes(10))
-            .build();
-    private final Cache<String, TokenBucket> exportPerIp = Caffeine.newBuilder()
-            .maximumSize(100_000)
-            .expireAfterAccess(Duration.ofMinutes(10))
-            .build();
+    private final Cache<String, TokenBucket> perIp = buckets();
+    // Baldes por IP mais apertados para caminhos específicos; os dois logins dividem o mesmo balde.
+    private final Map<String, PathLimit> pathLimits;
 
     @Autowired
     public RateLimitFilter(RateLimitProperties properties,
@@ -58,6 +57,23 @@ public class RateLimitFilter extends OncePerRequestFilter {
         this.exceptionResolver = exceptionResolver;
         this.clock = clock;
         this.global = new TokenBucket(properties.globalCapacity(), properties.globalPerSecond(), clock.getAsLong());
+        var export = new PathLimit(properties.exportCapacity(), properties.exportPerMinute() / 60, buckets());
+        var login = new PathLimit(properties.loginCapacity(), properties.loginPerMinute() / 60, buckets());
+        var limits = new HashMap<String, PathLimit>();
+        limits.put(EXPORT_PATH, export);
+        LOGIN_PATHS.forEach(path -> limits.put(path, login));
+        this.pathLimits = Map.copyOf(limits);
+    }
+
+    private record PathLimit(long capacity, double perSecond, Cache<String, TokenBucket> buckets) {
+
+        long tryConsume(String ip, long now) {
+            return buckets.get(ip, key -> new TokenBucket(capacity, perSecond, now)).tryConsume(now);
+        }
+    }
+
+    private static Cache<String, TokenBucket> buckets() {
+        return Caffeine.newBuilder().maximumSize(100_000).expireAfterAccess(Duration.ofMinutes(10)).build();
     }
 
     @Override
@@ -70,11 +86,8 @@ public class RateLimitFilter extends OncePerRequestFilter {
             throws ServletException, IOException {
         long now = clock.getAsLong();
         String ip = request.getRemoteAddr();
-        long waitNanos = 0;
-        if (EXPORT_PATH.equals(request.getRequestURI())) {
-            waitNanos = exportPerIp.get(ip, key -> new TokenBucket(properties.exportCapacity(),
-                    properties.exportPerMinute() / 60, now)).tryConsume(now);
-        }
+        PathLimit pathLimit = pathLimits.get(request.getRequestURI());
+        long waitNanos = pathLimit == null ? 0 : pathLimit.tryConsume(ip, now);
         if (waitNanos == 0) {
             waitNanos = perIp.get(ip, key -> new TokenBucket(properties.perIpCapacity(), properties.perIpPerSecond(), now))
                     .tryConsume(now);

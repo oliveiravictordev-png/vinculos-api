@@ -3,8 +3,10 @@ package com.teste.vinculos.infrastructure.config;
 import com.teste.vinculos.application.AuditQueriesUseCase;
 import com.teste.vinculos.application.FindCompaniesUseCase;
 import com.teste.vinculos.application.FindRecordsByCompanyUseCase;
+import com.teste.vinculos.application.LoginThrottle;
 import com.teste.vinculos.application.SearchRecordsUseCase;
 import com.teste.vinculos.domain.CustomerGateway;
+import com.teste.vinculos.domain.LoginAttemptStore;
 import com.teste.vinculos.domain.QueryAuditLog;
 import com.teste.vinculos.domain.RecordSearchGateway;
 import org.springframework.context.annotation.Bean;
@@ -42,5 +44,11 @@ public class UseCaseConfig {
     @Profile("!seed")
     AuditQueriesUseCase auditQueriesUseCase(QueryAuditLog log, Clock clock) {
         return new AuditQueriesUseCase(log, clock);
+    }
+
+    @Bean
+    @Profile("!seed")
+    LoginThrottle loginThrottle(LoginAttemptStore store, Clock clock) {
+        return new LoginThrottle(store, clock);
     }
 }
