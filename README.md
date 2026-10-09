@@ -442,7 +442,7 @@ No teste da VPS, cada requisição usou um CPF diferente para nunca cair no cach
 **Duas instâncias da API:** o compose sobe a API com `replicas: 2`. As duas entram na rede do Caddy com o mesmo nome (`vinculos-api`), e o DNS do Docker devolve os dois IPs. Se uma instância cai, o Docker a tira do DNS e a outra continua atendendo. A instância não guarda estado: sessões e auditoria ficam no MongoDB.
 - **Cache por instância:** cada uma tem o seu Caffeine. Como os dados só são lidos, não há invalidação a coordenar.
 - **Rate limit por instância:** o limite efetivo por IP pode chegar ao dobro do configurado. Ver [próximos passos](#próximos-passos).
-- **Deploy:** o deploy automático exige as duas saudáveis antes de dar a versão como publicada.
+- **Deploy sem queda:** o deploy automático sobe as instâncias novas antes de parar as antigas ([deploy](#deploy)).
 
 Para balanceamento com verificação de saúde no próprio Caddy (em vez de depender do DNS), o bloco no `Caddyfile` fica assim:
 
@@ -602,8 +602,8 @@ Sem a chave JWT e o segredo da auditoria, a API não sobe, e o deploy automátic
 **Deploy automático** (`deploy/auto-deploy.sh`, a cada 2 minutos):
 1. busca a `main`;
 2. só publica o commit novo **se a CI dele passou**;
-3. reconstrói a imagem e troca as duas instâncias da API;
-4. se elas não ficarem saudáveis em 2 minutos, **volta sozinho** para a imagem anterior.
+3. reconstrói a imagem e faz a troca **sem queda (rolling)**: sobe duas instâncias novas ao lado das antigas, espera as novas ficarem saudáveis e só então para as antigas, com desligamento gracioso que termina as requisições em andamento;
+4. se as novas não ficarem saudáveis em 2 minutos, remove-as, e as antigas seguem no ar sem nunca terem parado.
 
 O histórico fica em `journalctl -u vinculos-deploy`, e os alertas do host em `journalctl -t vinculos-monitor`.
 

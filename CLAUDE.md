@@ -80,7 +80,7 @@ Camadas no estilo clean/hexagonal. **A dependência só aponta para dentro:** `w
 - **Coleções auxiliares** `query_audit` e `auth_sessions`: pequenas, com nomes de campo legíveis e **índice TTL** (a auditoria expira por `AUDIT_RETENTION`, as sessões no vencimento). Dado novo que cresce sem limite precisa de TTL. Não renomeie essas coleções nem os índices delas: `MongoIndexes.ensureTtl` ajusta só o tempo.
 - **Dinheiro em centavos (`long`)**, exposto como `BigDecimal`. Nunca `double`.
 - **Leitura confiável e disponível:** read concern `majority` + `primaryPreferred` (um secundário responde durante a eleição de um novo primário, sem dado que possa sofrer rollback), `maxTimeMS` em toda consulta, `serverSelectionTimeoutMS=5000` na URI e projeção só dos campos necessários.
-- **Duas instâncias da API** (`replicas: 2` no compose), sem estado na instância; o deploy só termina com todas saudáveis.
+- **Duas instâncias da API** (`replicas: 2` no compose), sem estado na instância. O deploy é rolling (`auto-deploy.sh`): sobe as novas ao lado das antigas e só para as antigas quando todas as novas estão saudáveis. Não troque por `docker compose up --build`, que recria todas de uma vez e derruba a API.
 - **Replica set de 3 nós na VPS** (`mongo` com prioridade 2, `mongo2`, `mongo3`); o `mongo-init` é idempotente. O health check aceita PRIMARY ou SECONDARY, porque um nó que volta de uma falha volta como secundário. Mudança que afete a disponibilidade precisa passar no `ReplicaSetFailoverTest`.
 - **Carga (`seed`)** determinística e idempotente (`_id` derivado do cliente); o índice é criado no fim da carga, nunca antes.
 
