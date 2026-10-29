@@ -22,7 +22,7 @@
         <disruptor.version>4.0.0</disruptor.version>
         <springdoc.version>3.1.1</springdoc.version>
         <jacoco.version>0.8.15</jacoco.version>
-        <surefire-report.version>3.6.0</surefire-report.version>
+        <surefire-report.version>3.6.1</surefire-report.version>
     </properties>
 
     <dependencies>
